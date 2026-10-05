@@ -78,5 +78,8 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "bin": {
+    "dsh-feishu-plugin": "lib/cli.js"
   }
 }

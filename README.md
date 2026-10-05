@@ -148,13 +148,44 @@ DSH_HOME=/tmp/dsh-feishu-dev dsh web --patch /tmp/feishu-dev.patch.yml --no-open
 
 见 [cordis.patch.yml](cordis.patch.yml)（含逐项注释与默认值）。凭据走 `appId` / `appSecret` 或 `appSecretRef`。
 
-安装（尚未发布到 npm，M5 之后）：
+## 安装（已按生产路径实测）
+
+这是一个**组合包**（`dsh.bundle.patch`）：装进 profile 后会把自己的层插进配置。
 
 ```sh
+# 1) 装进某个 profile（会写进该 profile 的 dsh.profile.bundles）
 dsh plugin --profile <name> add dsh-feishu-plugin
 ```
 
-本地开发安装会把包以 `link:` 形式追加进 profile 的 `dsh.profile.bundles`。
+**可能撞到的一道坎**：pnpm ≥10 默认拒绝运行依赖的构建脚本，而 dsh 初始化 profile 时只在
+`<profile>/pnpm-workspace.yaml` 里写一个占位符：
+
+```yaml
+allowBuilds:
+  protobufjs: set this to true or false
+```
+
+不表态时 `add` 会以 `ERR_PNPM_IGNORED_BUILDS` 非零退出 —— **失败的那次不会把组合包加进
+`dsh.profile.bundles`**，于是插件"装了但没生效"。用本包自带的 CLI 幂等修好，然后再 `add` 一次：
+
+```sh
+dsh-feishu-plugin prepare --profile <name>    # → allowBuilds.protobufjs: false
+dsh plugin --profile <name> add dsh-feishu-plugin
+```
+
+验证（不需要启动）：
+
+```sh
+dsh --profile <name> --dump-config | grep -A3 '== dsh-feishu-plugin'
+```
+
+**实测记录**（2026-10-05，dsh 0.2.0-rc.2）：
+
+1. `pnpm pack` 产出的 tarball 装进全新 profile：`Packages: +61`，`dsh.profile.bundles` 变为 `["@deepseek-ai/dsh-base", "dsh-feishu-plugin"]`；
+2. profile 的 `node_modules/@deepseek-ai/` 里**只有 cosmokit 与 schemastery**（没有 `dsh-*` 副本），
+   而插件仍能启动 —— 证明 7 个 `@deepseek-ai/dsh-*`（llm / agent / session / storage-domain /
+   user-approval / user-questions / attachment）**都从运行时安装目录解析**；
+3. `dsh --profile feishu web` 启动成功：`已加载` → SDK 初始化 → `飞书长连接已建立`。
 
 ## 开发
 
