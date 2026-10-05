@@ -24,7 +24,7 @@
  * `ctx.effect` 负责卸载清理；会话不存活时按需 `ctx.agents.resume()` 恢复。
  */
 import type { Context } from "@deepseek-ai/cordis";
-import { COMMANDS, findCommand, parseCommand } from "./bridge/commands.js";
+import { helpText, isCommandAllowedInThread, parseCommand, threadForbiddenText } from "./bridge/commands.js";
 import { prepareDelivery, sendDelivery, type DeliveryPort } from "./bridge/deliver.js";
 import { decideInbound, type InboundMessageLike } from "./bridge/inbound.js";
 import {
@@ -35,11 +35,12 @@ import {
   type CardPort,
   type SessionEventLike,
 } from "./bridge/outbound.js";
+import { commandScope } from "./bridge/routing.js";
 import { isTerminal } from "./bridge/run-state.js";
 import { MemoryTopicStore, openTopicStore, topicKey, type TopicStore } from "./bridge/topics.js";
 import { Config, resolveConfig, type Config as ConfigShape } from "./config.js";
 import { createDshPort } from "./dsh/port.js";
-import { buildHelpCard, buildNoticeCard } from "./feishu/cards.js";
+import { buildNoticeCard } from "./feishu/cards.js";
 import { createFeishuChannel } from "./feishu/channel.js";
 import { ConnectionSupervisor } from "./feishu/connection.js";
 import { createLogger, createLogSink, errorMessage, maskId } from "./logger.js";
@@ -175,35 +176,31 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     runCards.delete(sessionId);
   }
 
-  async function handleCommand(text: string, message: { chatId: string }): Promise<void> {
+  /**
+   * 命令分发（上游 `index.ts:849-852` 的"命令优先拦截"落点）。
+   *
+   * 顺序与上游一致：解析 → 话题内白名单校验（被禁则引导回主聊天流）→ 按 scope 执行。
+   * 已完整移植的只有 `/help` 与 `/stop`；其余命令在上游依赖会话列表卡 / 建会话表单 /
+   * 模型与权限预设（后续层），这里**显式回报尚未移植**，绝不假装成功。
+   */
+  async function handleCommand(
+    text: string,
+    message: { chatId: string; threadId?: string },
+  ): Promise<void> {
     const parsed = parseCommand(text);
-    const spec = parsed ? findCommand(parsed.name) : undefined;
-    if (!spec) {
-      await sendNotice(message.chatId, `未知命令：\`${text}\`\n\n${helpMarkdown()}`, "orange");
+    if (!parsed) return;
+    const scope = commandScope(Boolean(message.threadId));
+
+    if (scope === "thread" && !isCommandAllowedInThread(parsed.name)) {
+      await sendNotice(message.chatId, threadForbiddenText(parsed.raw), "grey");
       return;
     }
 
-    switch (spec.name) {
-      case "/help":
-        await channel.send(message.chatId, { card: buildHelpCard(COMMANDS) });
+    switch (parsed.name) {
+      case "help":
+        await sendNotice(message.chatId, helpText(scope), "blue");
         return;
-      case "/status": {
-        const topicStore = await store();
-        const bound = topicStore.entries().length;
-        await sendNotice(
-          message.chatId,
-          [
-            "**飞书桥状态**",
-            `- 长连接：\`${supervisor.state}\``,
-            `- 已绑定会话：${bound}`,
-            `- 权限门：\`${config.permissionGate}\``,
-            `- 群入口：${config.groupEnabled ? "已开启" : "关闭（未申请群权限）"}`,
-          ].join("\n"),
-          "blue",
-        );
-        return;
-      }
-      case "/stop": {
+      case "stop": {
         const topicStore = await store();
         const record = topicStore.get(topicKey(message));
         if (!record) {
@@ -220,12 +217,12 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
         return;
       }
       default:
-        await sendNotice(message.chatId, helpMarkdown(), "grey");
+        await sendNotice(
+          message.chatId,
+          `命令 \`/${parsed.raw}\` 的完整逻辑尚未逐层移植到本插件（见 README 的移植计划）。\n\n${helpText(scope)}`,
+          "orange",
+        );
     }
-  }
-
-  function helpMarkdown(): string {
-    return COMMANDS.map((command) => `- \`${command.name}\` — ${command.description}`).join("\n");
   }
 
   // —— 飞书侧事件 ——
@@ -279,7 +276,10 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     }
     if (decision.kind === "command") {
       try {
-        await handleCommand(decision.text, { chatId: message.chatId });
+        await handleCommand(decision.text, {
+          chatId: message.chatId,
+          ...(message.threadId ? { threadId: message.threadId } : {}),
+        });
       } catch (error) {
         log.error("命令处理失败", { reason: errorMessage(error) });
       }

@@ -18,6 +18,7 @@ MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同�
 | `src/bridge/routing.ts` | `src/feishu/routing.ts` |
 | `src/bridge/delivery.ts` | `src/feishu/delivery.ts` |
 | `src/bridge/session-map.ts` | `src/feishu/session-map.ts` |
+| `src/bridge/commands.ts` | `src/feishu/commands.ts` |
 | `src/feishu/cards.ts` | `src/feishu/cards.ts` |
 | `src/feishu/card-limits.ts` | `src/feishu/card-limits.ts` |
 | `src/bridge/run-state.ts` | `src/feishu/run-state.ts` |
@@ -31,6 +32,7 @@ MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同�
 | `test/routing.test.ts` | `test/routing.test.ts` |
 | `test/delivery.test.ts` | `test/delivery.test.ts` |
 | `test/session-map.test.ts` | `test/session-map.test.ts` |
+| `test/commands.test.ts` | `test/commands.test.ts` |
 
 宿主适配（本仓库新增，非搬运）：`src/dsh/port.ts`（`ctx.agents` / `createUserMessage`）、
 `src/dsh/storage.ts`（`ctx.storageDomain` → 上游 KV 端口）、`src/dsh/source.ts`（`MessageSourceMap` 增强）、

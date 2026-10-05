@@ -1,5 +1,8 @@
 /**
- * 话题 ↔ 会话映射的持久化。
+ * 话题 ↔ 会话映射的持久化（临时实现）。
+ *
+ * 注：按上游逻辑逐层搬运后，会话映射由 `src/bridge/session-map.ts` 的 5 层 key + 多会话列表承担；
+ * 本模块是 M3a 阶段的单层临时实现，待 `src/index.ts` 接到 SessionMap 后删除。
  *
  * 上游用 `ctx.storage` 的 5 层前缀 key（`chat:<id>:sessions` / `thread:<tid>` / `root:<rootId>` …）；
  * dsh 的持久化接缝是 `ctx.storageDomain`（领域表，zod 校验记录），因此这里改成一张表：
@@ -135,14 +138,4 @@ export async function openTopicStore(domain: StorageDomainLike, log: Logger): Pr
  */
 export function topicKey(input: { readonly chatId: string; readonly threadId?: string }): string {
   return input.threadId ? `thread:${input.threadId}` : `chat:${input.chatId}`;
-}
-
-const DEFAULT_TITLE_MAX_CHARS = 20;
-
-/** 从首条消息生成话题标题：压缩空白 + 截断；空消息回退为「飞书会话」。 */
-export function topicTitle(text: string, maxChars: number = DEFAULT_TITLE_MAX_CHARS): string {
-  const collapsed = text.replace(/\s+/g, " ").trim();
-  if (!collapsed) return "飞书会话";
-  const limit = Math.max(1, Math.trunc(maxChars));
-  return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit)}…`;
 }

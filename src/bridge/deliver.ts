@@ -13,7 +13,8 @@
  * 这是 M3b 首次真实联调踩到的坑（截图上出现了「⏳ 卡住 + ✅ 另一张」两张卡）。
  */
 import { applyDelivery, type InboundDecision, type InboundMessageLike } from "./inbound.js";
-import { topicKey, topicTitle, type TopicRecord, type TopicStore } from "./topics.js";
+import { topicTitle } from "./commands.js";
+import { topicKey, type TopicRecord, type TopicStore } from "./topics.js";
 import type { HostPort } from "../types.js";
 
 export type DeliverDecision = Extract<InboundDecision, { kind: "deliver" }>;

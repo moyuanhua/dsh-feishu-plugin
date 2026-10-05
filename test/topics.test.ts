@@ -1,12 +1,5 @@
 import { describe, expect, test } from "vitest";
-import {
-  FEISHU_TOPICS_DOMAIN,
-  MemoryTopicStore,
-  openTopicStore,
-  topicKey,
-  topicTitle,
-  type StorageDomainLike,
-} from "../src/bridge/topics.js";
+import { FEISHU_TOPICS_DOMAIN, MemoryTopicStore, openTopicStore, topicKey, type StorageDomainLike } from "../src/bridge/topics.js";
 import type { Logger } from "../src/types.js";
 
 const LOG: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
@@ -17,11 +10,6 @@ describe("topicKey / topicTitle", () => {
     expect(topicKey({ chatId: "oc_1", threadId: "omt_9" })).toBe("thread:omt_9");
   });
 
-  test("标题压缩空白并截断到 20 字符；空文本回退", () => {
-    expect(topicTitle("  帮我   看看构建  ")).toBe("帮我 看看构建");
-    expect(topicTitle("")).toBe("飞书会话");
-    expect(topicTitle("一".repeat(30))).toBe(`${"一".repeat(20)}…`);
-  });
 });
 
 describe("领域声明", () => {

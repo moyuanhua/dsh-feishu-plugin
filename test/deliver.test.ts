@@ -45,7 +45,7 @@ describe("prepareDelivery / sendDelivery（先发卡再投递的顺序保证）"
     expect(prepared).toEqual({
       sessionId: "feishu-session-1",
       created: true,
-      title: "帮我看看构建为什么失败",
+      title: "话题: 帮我看看构建为什么失败",
       cwd: "/tmp/work",
     });
     expect(h.followed).toHaveLength(0);
@@ -72,7 +72,7 @@ describe("prepareDelivery / sendDelivery（先发卡再投递的顺序保证）"
     const store = new MemoryTopicStore();
     const h = harness();
     const prepared = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", titleMaxChars: 4 });
-    expect(prepared.title).toBe("帮我看看…");
+    expect(prepared.title).toBe("话题: 帮我看看…");
   });
 });
 
@@ -83,13 +83,13 @@ describe("deliverInbound", () => {
     const result = await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1000 });
 
     expect(result).toEqual({ sessionId: "feishu-session-1", created: true });
-    expect(h.created).toEqual([{ cwd: "/tmp/work", title: "帮我看看构建为什么失败" }]);
+    expect(h.created).toEqual([{ cwd: "/tmp/work", title: "话题: 帮我看看构建为什么失败" }]);
     expect(h.followed).toHaveLength(1);
     expect(h.steered).toHaveLength(0);
     expect(store.get("chat:oc_1")).toEqual({
       sessionId: "feishu-session-1",
       cwd: "/tmp/work",
-      title: "帮我看看构建为什么失败",
+      title: "话题: 帮我看看构建为什么失败",
       chatId: "oc_1",
       updatedAt: 1000,
     });
