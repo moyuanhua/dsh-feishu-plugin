@@ -19,6 +19,9 @@ MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同�
 | `src/bridge/delivery.ts` | `src/feishu/delivery.ts` |
 | `src/bridge/session-map.ts` | `src/feishu/session-map.ts` |
 | `src/bridge/commands.ts` | `src/feishu/commands.ts` |
+| `src/bridge/perm-presets.ts` | `src/feishu/perm-presets.ts` |
+| `src/bridge/permission.ts`（纯策略部分） | `src/permission.ts` |
+| `src/feishu/cards.ts` 的审批卡三个构建器 | `src/feishu/cards.ts` |
 | `src/feishu/cards.ts` | `src/feishu/cards.ts` |
 | `src/feishu/card-limits.ts` | `src/feishu/card-limits.ts` |
 | `src/bridge/run-state.ts` | `src/feishu/run-state.ts` |
@@ -33,8 +36,11 @@ MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同�
 | `test/delivery.test.ts` | `test/delivery.test.ts` |
 | `test/session-map.test.ts` | `test/session-map.test.ts` |
 | `test/commands.test.ts` | `test/commands.test.ts` |
+| `test/perm-presets.test.ts` | `test/perm-presets.test.ts` |
+| `test/permission.test.ts` | `test/permission.test.ts` |
 
-宿主适配（本仓库新增，非搬运）：`src/dsh/port.ts`（`ctx.agents` / `createUserMessage`）、
+宿主适配（本仓库新增，非搬运）：`src/bridge/approval.ts`（上游 `ApprovalManager` 的 waterfall 变体——
+dsh 用 `ctx.on('approval/request', …)` 直接 await 用户点击并返回结果词，不需要 evaluate hook + reply API），`src/dsh/port.ts`（`ctx.agents` / `createUserMessage`）、
 `src/dsh/storage.ts`（`ctx.storageDomain` → 上游 KV 端口）、`src/dsh/source.ts`（`MessageSourceMap` 增强）、
 `src/bridge/outbound.ts`（运行卡控制器）、`src/config.ts`、`src/index.ts`。
 

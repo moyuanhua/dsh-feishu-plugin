@@ -215,3 +215,152 @@ function closeCodeFences(text: string): string {
   if (fences && fences.length % 2 !== 0) return `${text}${CODE_FENCE}`;
   return text;
 }
+
+/* ------------------------------------------------------------------ *
+ * 审批卡
+ *
+ * 逻辑来源：opencode-feishu-plugin `src/feishu/cards.ts`（MIT，Copyright (c) 2026 moyuanhua），
+ * `buildApprovalCard` / `buildResolvedCard` / `buildSessionAllowResolvedCard` 逐行搬运
+ * （仅把标题里的产品名改为本插件、复用本文件已有的 `cardButton`/`escapeInline`/`truncateCardContent`）。
+ *
+ * 按钮 value 形状（点击回调在 `card.action.trigger` 的 `event.action.value` 原样回传）：
+ * - 允许一次 / 始终允许 / 拒绝：`{ t: <自签 token>, d: "once"|"always"|"reject" }`
+ * - 本会话内允许该工具：`{ cmd: "allow_session", a: <action>, t: <自签 token> }`
+ * ------------------------------------------------------------------ */
+
+/** 审批人 id 在卡片上只显示前 8 位。 */
+function maskApprover(id: string): string {
+  return id.length <= 8 ? id : `${id.slice(0, 8)}…`;
+}
+
+export interface ApprovalCardInput {
+  readonly requestID: string;
+  readonly sessionID: string;
+  readonly action: string;
+  readonly resources: readonly string[];
+  readonly message?: string;
+  /** true = 该请求可持久化「始终允许」。 */
+  readonly canPersistAlways: boolean;
+  /** 按钮 value 里的自签 token。 */
+  readonly token: string;
+  /**
+   * 「✅ 本会话内允许该工具」按钮的自签 token。
+   * 缺省 = 不渲染该按钮（配置关闭或运行时未装配签名）。
+   */
+  readonly allowSessionToken?: string;
+  readonly maxResourcesShown: number;
+}
+
+export interface ApprovalOutcome {
+  readonly reply: "once" | "always" | "reject";
+  readonly operatorOpenId: string;
+  readonly at: number;
+}
+
+/** 审批卡片（通过一次 / 始终允许 / 本会话内允许 / 拒绝）。 */
+export function buildApprovalCard(input: ApprovalCardInput): object {
+  const resources = input.resources.length > 0 ? input.resources : ["（未提供资源）"];
+  const shown = resources.slice(0, input.maxResourcesShown);
+  const hidden = resources.length - shown.length;
+  const resourceLines = shown.map((r) => `- \`${escapeInline(r)}\``).join("\n");
+  const overflow = hidden > 0 ? `\n…另有 ${hidden} 项` : "";
+
+  const lines = [`**操作**：\`${escapeInline(input.action)}\``, "", "**资源**：", `${resourceLines}${overflow}`];
+  if (input.message) lines.push("", `**说明**：${input.message}`);
+
+  const rejectHint = "⚠️ 拒绝会同时驳回本会话其他待批请求。";
+  lines.push("", rejectHint);
+  if (!input.canPersistAlways) {
+    lines.push("ℹ️ 本请求未携带保存项，「始终允许」等价于「允许一次」。");
+  }
+
+  const alwaysLabel = input.canPersistAlways ? "🔓 始终允许" : "🔓 始终允许（同一次）";
+
+  const buttons: object[] = [
+    cardButton("✅ 允许一次", "primary", { t: input.token, d: "once" }),
+    cardButton(alwaysLabel, "default", { t: input.token, d: "always" }),
+  ];
+  // 会话粒度的中间档位：仅当配置开启且装配了签名时出现。
+  if (input.allowSessionToken) {
+    buttons.push(
+      cardButton("✅ 本会话内允许该工具", "default", {
+        cmd: "allow_session",
+        a: input.action,
+        t: input.allowSessionToken,
+      }),
+    );
+  }
+  buttons.push(cardButton("❌ 拒绝", "danger", { t: input.token, d: "reject" }));
+
+  return {
+    schema: "2.0",
+    config: { update_multi: true },
+    header: {
+      title: { tag: "plain_text", content: "🔐 飞书权限请求" },
+      template: "orange",
+    },
+    body: {
+      elements: [{ tag: "markdown", content: truncateCardContent(lines.join("\n")) }, ...buttons],
+    },
+  };
+}
+
+export interface SessionAllowOutcome {
+  readonly action: string;
+  readonly operatorOpenId: string;
+  readonly at: number;
+}
+
+/** 「本会话内允许」点击后的结果卡（无按钮）。 */
+export function buildSessionAllowResolvedCard(input: ApprovalCardInput, outcome: SessionAllowOutcome): object {
+  const when = new Date(outcome.at).toISOString();
+  return {
+    schema: "2.0",
+    config: { update_multi: true },
+    header: {
+      title: { tag: "plain_text", content: `✅ 已允许本会话内 ${outcome.action}` },
+      template: "green",
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: truncateCardContent(
+            [
+              `**操作**：\`${escapeInline(input.action)}\``,
+              "",
+              "本会话内后续调用该工具将**不再询问**（其它会话不受影响）。",
+              "",
+              `**处理人**：\`${escapeInline(maskApprover(outcome.operatorOpenId))}\``,
+              `**时间**：${when}`,
+            ].join("\n"),
+          ),
+        },
+      ],
+    },
+  };
+}
+
+/** 审批完成后的结果卡片（无按钮）。 */
+export function buildResolvedCard(input: ApprovalCardInput, outcome: ApprovalOutcome): object {
+  const label =
+    outcome.reply === "reject" ? "❌ 已拒绝" : outcome.reply === "always" ? "🔓 已始终允许" : "✅ 已允许一次";
+  const template: CardTemplate = outcome.reply === "reject" ? "red" : "green";
+  const when = new Date(outcome.at).toISOString();
+
+  return {
+    schema: "2.0",
+    config: { update_multi: true },
+    header: { title: { tag: "plain_text", content: label }, template },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: truncateCardContent(
+            `**操作**：\`${escapeInline(input.action)}\`\n\n**处理人**：\`${escapeInline(maskApprover(outcome.operatorOpenId))}\`\n\n**时间**：${when}`,
+          ),
+        },
+      ],
+    },
+  };
+}

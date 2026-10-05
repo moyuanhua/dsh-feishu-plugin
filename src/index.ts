@@ -25,6 +25,8 @@
  * `ctx.effect` 负责卸载清理；会话不存活时按需 `ctx.agents.resume()` 恢复。
  */
 import type { Context } from "@deepseek-ai/cordis";
+// 仅为载入 approval 事件的类型声明合并（`approval/request` 的类型来自该包）。
+import type {} from "@deepseek-ai/dsh-user-approval";
 import {
   defaultSessionTitle,
   helpText,
@@ -33,6 +35,7 @@ import {
   threadForbiddenText,
   topicTitle,
 } from "./bridge/commands.js";
+import { ApprovalBridge } from "./bridge/approval.js";
 import { deliverToSession, type DeliveryPort } from "./bridge/deliver.js";
 import { ExecutionTracker } from "./bridge/delivery.js";
 import { decideInbound, type InboundDecision, type InboundMessageLike } from "./bridge/inbound.js";
@@ -52,10 +55,19 @@ import { createDshPort } from "./dsh/port.js";
 import { openDomainKv } from "./dsh/storage.js";
 import { buildNoticeCard } from "./feishu/cards.js";
 import { createFeishuChannel } from "./feishu/channel.js";
+import type { CardActionResponse } from "@larksuite/channel";
 import { ConnectionSupervisor } from "./feishu/connection.js";
 import { createLogger, createLogSink, errorMessage, maskId } from "./logger.js";
-import { OwnerPolicy } from "./security/allowlist.js";
-import { ReplayGuard, signStop, verifyStop } from "./security/token.js";
+import { matchesAny, OwnerPolicy } from "./security/allowlist.js";
+import {
+  ReplayGuard,
+  signAllowSession,
+  signApproval,
+  signStop,
+  verifyAllowSession,
+  verifyApproval,
+  verifyStop,
+} from "./security/token.js";
 import { MemoryStorage } from "./types.js";
 
 export const name = "feishu";
@@ -120,16 +132,19 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
    * 打开失败降级为内存 KV，保证通道可用（映射不跨重启）。
    */
   let sessionMapPromise: Promise<SessionMap> | undefined;
+  let mapInstance: SessionMap | undefined;
   let closeKv: (() => void) | undefined;
   const sessionMap = (): Promise<SessionMap> =>
     (sessionMapPromise ??= (async () => {
       try {
         const kv = await openDomainKv(ctx.storageDomain, log);
         closeKv = kv.close;
-        return new SessionMap(kv, log);
+        mapInstance = new SessionMap(kv, log);
+        return mapInstance;
       } catch (error) {
         log.warn("会话映射域表打开失败，降级为内存表（映射不跨重启）", { reason: errorMessage(error) });
-        return new SessionMap(new MemoryStorage(), log);
+        mapInstance = new SessionMap(new MemoryStorage(), log);
+        return mapInstance;
       }
     })());
 
@@ -166,6 +181,49 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     },
     onState: (state, detail) => {
       if (state === "failed") log.error("长连接进入失败终态", { ...detail });
+    },
+  });
+
+  /**
+   * 审批桥：把 dsh 的 `approval/request` waterfall 接到飞书卡片。
+   *
+   * 安全边界（上游语义）：只有**本桥拥有**（有飞书映射）的会话才接管；无映射一律委托宿主，
+   * 否则 GUI/TUI 会话会被挂在这里等飞书点击。
+   */
+  const approvals = new ApprovalBridge({
+    config: {
+      permissionGate: config.permissionGate,
+      allowTools: config.allowTools,
+      denyTools: config.denyTools,
+      approvalTtlMs: config.approvalTtlMs,
+      maxResourcesShown: config.approvalMaxResourcesShown,
+    },
+    log,
+    cardPort,
+    getLink: async (sessionId) => (await sessionMap()).resolveBySession(sessionId),
+    setSessionMeta: async (sessionId, patch) => (await sessionMap()).setSessionMeta(sessionId, patch),
+    isAllowed: (openId) => ownerPolicy.isAllowed(openId),
+    sign: ({ requestID, sessionID, openId }) =>
+      signApproval(
+        { r: requestID, s: sessionID, u: openId, ttlMs: config.approvalTtlMs },
+        config.signSecret,
+      ),
+    verify: (token, expect) =>
+      verifyApproval(token, config.signSecret, expect ? { expect } : {}),
+    replay: new ReplayGuard(config.approvalTtlMs),
+    signAllowSession: ({ requestID, sessionID, action }) =>
+      signAllowSession(
+        { requestID, sessionID, action, ttlMs: config.approvalTtlMs },
+        config.signSecret,
+      ),
+    verifyAllowSession: (token, expect) =>
+      verifyAllowSession(token, config.signSecret, {
+        ...(expect?.sessionID ? { expectSessionID: expect.sessionID } : {}),
+        ...(expect?.action ? { expectAction: expect.action } : {}),
+      }),
+    hasSessionAllow: (sessionId, action) => {
+      const link = mapInstance?.getLink(sessionId);
+      return Boolean(link?.allowActions?.length && matchesAny(action, link.allowActions));
     },
   });
 
@@ -345,6 +403,10 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
 
   channel.onCardAction(async (event) => {
     if (disposed) return;
+    // 审批按钮优先（审批 value 形状与强停不同，桥对非审批 value 返回 undefined）。
+    const approvalResponse = await approvals.handleCardAction(event);
+    if (approvalResponse !== undefined && approvalResponse !== null) return approvalResponse as CardActionResponse;
+
     const token = readStopValue(event.action.value);
     if (!token) return;
     const operator = event.operator.openId;
@@ -454,6 +516,11 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
 
   // —— dsh 侧事件：判活（steer/queue）+ 流式正文 + 持久结算 ——
 
+  // 审批：waterfall 直接返回结果词（只有 allowed-once 是授权）。
+  ctx.on("approval/request", (req, next) =>
+    approvals.handle(sessionIdOfAgent(req.agent), req, () => next()),
+  );
+
   ctx.on("agent/assistant-stream", (payload) => {
     if (disposed) return;
     const sessionId = sessionIdOfAgent(payload.agent);
@@ -527,6 +594,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     return async () => {
       // 先置位再拆：清理期间到达的事件/消息一律短路（卸载清理是并发执行的）。
       disposed = true;
+      approvals.dispose();
       await supervisor.stop();
       for (const sessionId of [...runCards.keys()]) {
         await settleRunCard(sessionId);

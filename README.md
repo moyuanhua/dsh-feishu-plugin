@@ -32,7 +32,8 @@
 | token / 白名单 / 日志 | `security/token`、`security/allowlist`、`logger` | 同名 | 逐条搬运 | ✅ |
 | 入站主流程接线 | `src/index.ts:816-918` `handleMessage` | `src/index.ts` | 由 `routing`/`session-map` 规格覆盖 | ✅ |
 | 建会话表单 / 会话列表卡 / 恢复摘要 | `setup-wizard`、`session-list`、`resume-summary` 等 | — | — | ⬜ |
-| 审批 / 提问 / 看门狗 / 附件 | `permission`、`form-relay`、`watchdog`、`attachments` | — | — | ⬜ |
+| 审批（策略 + 卡片 + 桥） | `permission.ts`、`perm-presets.ts`、审批卡构建器 | `bridge/permission.ts`、`bridge/perm-presets.ts`、`bridge/approval.ts`、审批卡构建器 | `test/permission.test.ts`（17）、`test/perm-presets.test.ts`（9）、`test/approval.test.ts`（13） | ✅ |
+| 提问 / 看门狗 / 附件 / 建会话表单 / 会话列表卡 | `form-relay`、`watchdog`、`attachments`、`setup-wizard`、`session-list` | — | — | ⬜ |
 
 **产品语义（来自上游，已落地）**：
 - 主聊天流（无 `thread_id` 的普通文本）= **管理台**，普通文本**不进入任何会话**，回管理台提示卡；

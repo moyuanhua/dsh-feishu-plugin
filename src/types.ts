@@ -88,6 +88,16 @@ export interface SessionLink {
   readonly rootCard?: SessionRootCardBase;
 }
 
+/**
+ * 权限规则（上游 P6）：`{action, resource, effect}`，**最后匹配优先**。
+ * 会话预设把它写进会话级 ruleset。
+ */
+export interface PermissionRule {
+  readonly action: string;
+  readonly resource: string;
+  readonly effect: "allow" | "ask" | "deny";
+}
+
 /** 话题 → 会话映射（上游 `ThreadLink`）。 */
 export interface ThreadLink {
   readonly sessionID: string;
