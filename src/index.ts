@@ -25,7 +25,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { COMMANDS, findCommand, parseCommand } from "./bridge/commands.js";
-import { deliverInbound, type DeliveryPort } from "./bridge/deliver.js";
+import { prepareDelivery, sendDelivery, type DeliveryPort } from "./bridge/deliver.js";
 import { decideInbound, type InboundMessageLike } from "./bridge/inbound.js";
 import {
   mapSessionEvent,
@@ -35,7 +35,8 @@ import {
   type CardPort,
   type SessionEventLike,
 } from "./bridge/outbound.js";
-import { MemoryTopicStore, openTopicStore, topicKey, topicTitle, type TopicStore } from "./bridge/topics.js";
+import { isTerminal } from "./bridge/run-state.js";
+import { MemoryTopicStore, openTopicStore, topicKey, type TopicStore } from "./bridge/topics.js";
 import { Config, resolveConfig, type Config as ConfigShape } from "./config.js";
 import { createDshPort } from "./dsh/port.js";
 import { buildHelpCard, buildNoticeCard } from "./feishu/cards.js";
@@ -285,40 +286,60 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       return;
     }
 
+    let attemptedSession: string | undefined;
     try {
       const topicStore = await store();
-      const result = await deliverInbound(topicStore, port, inbound, decision, { cwd: config.cwd });
-      sessionChats.set(result.sessionId, message.chatId);
+      // 顺序不能反：先解析/建会话 → 再发运行卡 → 最后才投递。
+      // followup() 会立刻唤醒 agent，先投递再发卡会丢掉这一轮最早的流式事件（M3b 的双卡 bug）。
+      const prepared = await prepareDelivery(topicStore, port, inbound, decision, {
+        cwd: config.cwd,
+        titleMaxChars: config.topicTitleMaxChars,
+      });
+      attemptedSession = prepared.sessionId;
+      sessionChats.set(prepared.sessionId, message.chatId);
 
-      // 首次投递时挂上运行卡；后续消息复用同一张（一个会话一张活动卡）。
-      if (!runCards.has(result.sessionId)) {
-        const card = new RunCard(cardPort, log, {
+      let card = runCards.get(prepared.sessionId);
+      if (card && isTerminal(card.currentState)) {
+        // 上一轮已结束：收尾旧卡，这一轮换一张新卡。
+        await settleRunCard(prepared.sessionId);
+        card = undefined;
+      }
+      if (!card) {
+        card = new RunCard(cardPort, log, {
           chatId: message.chatId,
-          title: topicTitle(decision.text, config.topicTitleMaxChars),
-          stopToken: signStop(
-            { sessionID: result.sessionId, ttlMs: config.approvalTtlMs },
-            config.signSecret,
-          ),
+          title: prepared.title,
+          stopToken: signStop({ sessionID: prepared.sessionId, ttlMs: config.approvalTtlMs }, config.signSecret),
           throttleMs: config.cardThrottleMs,
           maxTextChars: config.cardMaxTextChars,
           maxToolBlocks: config.cardMaxToolBlocks,
           maxCardChars: config.cardMaxChars,
         });
-        runCards.set(result.sessionId, card);
+        runCards.set(prepared.sessionId, card);
         await card.start();
       }
 
+      await sendDelivery(prepared, port, inbound, decision);
+
       log.info("已投递到会话", {
-        sessionId: result.sessionId,
-        created: result.created,
+        sessionId: prepared.sessionId,
+        created: prepared.created,
         delivery: decision.delivery,
         attachments: decision.attachmentCount,
         chars: decision.text.length,
         sender: maskId(message.senderId),
       });
     } catch (error) {
-      log.error("投递失败", { reason: errorMessage(error), sender: maskId(message.senderId) });
-      await sendNotice(message.chatId, `投递失败：${errorMessage(error)}`, "red");
+      const reason = errorMessage(error);
+      log.error("投递失败", { reason, sender: maskId(message.senderId) });
+      // 卡片可能已经发出去了：收成失败态，绝不留下永远「运行中」的卡。
+      if (attemptedSession) {
+        const card = runCards.get(attemptedSession);
+        if (card && !isTerminal(card.currentState)) {
+          card.handle({ type: "turn-end", outcome: "failed", reason });
+          await settleRunCard(attemptedSession);
+        }
+      }
+      await sendNotice(message.chatId, `投递失败：${reason}`, "red");
     }
   });
 

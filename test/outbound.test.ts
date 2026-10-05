@@ -239,6 +239,35 @@ describe("RunCard", () => {
     expect(h.patches.length).toBeGreaterThanOrEqual(1);
   });
 
+  test("start 未完成时到达的事件不会补发第二张卡（双卡回归）", async () => {
+    let releaseSend: (() => void) | undefined;
+    const sends: string[] = [];
+    const patches: string[] = [];
+    const port: CardPort = {
+      sendCard: async () => {
+        await new Promise<void>((resolve) => {
+          releaseSend = resolve;
+        });
+        sends.push("om_1");
+        return "om_1";
+      },
+      patchCard: async (messageId) => {
+        patches.push(messageId);
+      },
+    };
+    const card = new RunCard(port, LOG, { chatId: "oc_1", title: "t", throttleMs: 0, now: () => 1 });
+
+    const starting = card.start(); // 故意不 await：模拟首卡还在路上
+    card.handle({ type: "text-delta", text: "早到的事件" });
+    releaseSend?.();
+    await starting;
+    await card.drain();
+
+    expect(sends).toHaveLength(1); // 关键：只发一张卡
+    expect(patches).toEqual(["om_1"]); // 事件落成对同一张卡的 patch
+    expect(card.currentState.text).toBe("早到的事件");
+  });
+
   test("工具块与失败终态都能渲染进卡片", async () => {
     const h = harness({ throttleMs: 0 });
     await h.card.start();

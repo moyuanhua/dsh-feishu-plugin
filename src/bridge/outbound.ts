@@ -173,6 +173,8 @@ const DEFAULT_MAX_CARD_CHARS = 30_000;
 export class RunCard {
   private state: RunState;
   private messageId: string | undefined;
+  /** 首卡的发送 Promise：所有 patch 都排在它之后，避免与 start 竞态。 */
+  private startPromise: Promise<void> | undefined;
   private lastRenderedAt = Number.NEGATIVE_INFINITY;
   /** patch 串行链：保证卡片更新按事件顺序落地。 */
   private chain: Promise<void> = Promise.resolve();
@@ -200,10 +202,12 @@ export class RunCard {
 
   /** 发出首张运行卡。 */
   async start(): Promise<void> {
-    const card = this.buildCard();
-    this.messageId = await this.port.sendCard(this.options.chatId, card);
-    this.lastRenderedAt = this.now();
-    this.log.debug("运行卡已发出", { messageId: this.messageId });
+    this.startPromise ??= (async () => {
+      this.messageId = await this.port.sendCard(this.options.chatId, this.buildCard());
+      this.lastRenderedAt = this.now();
+      this.log.debug("运行卡已发出", { messageId: this.messageId });
+    })();
+    await this.startPromise;
   }
 
   /**
@@ -246,17 +250,20 @@ export class RunCard {
     return this.options.throttleMs ?? DEFAULT_THROTTLE_MS;
   }
 
+  /**
+   * 排队一次卡片刷新。
+   *
+   * 关键：patch **必须**排在 `start()` 之后，且渲染发生在队列真正执行时 ——
+   * 否则 start 尚未返回时 `messageId` 还是 undefined，会误判为"没发出去"而**补发第二张卡**
+   * （M3b 首次真实联调的双卡 bug：一张 ⏳ 卡住、一张 ✅ 正常）。
+   */
   private flush(): Promise<void> {
-    const card = this.buildCard();
-    const target = this.messageId;
     this.chain = this.chain
       .then(async () => {
-        if (target === undefined) {
-          // 还没发出去（极少见：start 尚未完成就来了事件）→ 补发。
-          this.messageId = await this.port.sendCard(this.options.chatId, card);
-        } else {
-          await this.port.patchCard(target, card);
-        }
+        if (this.startPromise) await this.startPromise;
+        const target = this.messageId;
+        if (target === undefined) return; // 首卡都没发出去（start 失败），不补发
+        await this.port.patchCard(target, this.buildCard());
         this.lastRenderedAt = this.now();
       })
       .catch((error: unknown) => {

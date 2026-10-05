@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { deliverInbound, type DeliveryPort } from "../src/bridge/deliver.js";
+import { deliverInbound, prepareDelivery, sendDelivery, type DeliveryPort } from "../src/bridge/deliver.js";
 import type { InboundMessageLike } from "../src/bridge/inbound.js";
 import { MemoryTopicStore } from "../src/bridge/topics.js";
 import type { AgentLike } from "../src/types.js";
@@ -35,6 +35,46 @@ function harness(options: { failResolve?: boolean } = {}) {
   };
   return { created, steered, followed, agent, port };
 }
+
+describe("prepareDelivery / sendDelivery（先发卡再投递的顺序保证）", () => {
+  test("prepare 只解析/建会话，不向会话注入消息", async () => {
+    const store = new MemoryTopicStore();
+    const h = harness();
+    const prepared = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 7 });
+
+    expect(prepared).toEqual({
+      sessionId: "feishu-session-1",
+      created: true,
+      title: "帮我看看构建为什么失败",
+      cwd: "/tmp/work",
+    });
+    expect(h.followed).toHaveLength(0);
+    expect(h.steered).toHaveLength(0);
+    expect(store.get("chat:oc_1")?.sessionId).toBe("feishu-session-1");
+
+    // 第二步才注入
+    await sendDelivery(prepared, h.port, MESSAGE, DECISION);
+    expect(h.followed).toHaveLength(1);
+  });
+
+  test("prepare 幂等：第二次返回同一会话且 created=false", async () => {
+    const store = new MemoryTopicStore();
+    const h = harness();
+    const first = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1 });
+    const second = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 2 });
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.created).toBe(false);
+    expect(h.created).toHaveLength(1);
+    expect(store.get("chat:oc_1")?.updatedAt).toBe(2);
+  });
+
+  test("titleMaxChars 透传给标题生成", async () => {
+    const store = new MemoryTopicStore();
+    const h = harness();
+    const prepared = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", titleMaxChars: 4 });
+    expect(prepared.title).toBe("帮我看看…");
+  });
+});
 
 describe("deliverInbound", () => {
   test("首次消息：新建会话、写入映射、followup 投递", async () => {
