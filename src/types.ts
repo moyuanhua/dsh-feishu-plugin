@@ -19,7 +19,82 @@ export interface Logger {
 export interface StorageLike {
   get(key: string): Promise<unknown> | unknown;
   set(key: string, value: unknown): Promise<void> | void;
-  remove?(key: string): Promise<void> | void;
+  remove(key: string): Promise<void> | void;
+}
+
+/* ------------------------------------------------------------------ *
+ * 会话映射的数据形状
+ *
+ * 逻辑来源：opencode-feishu-plugin 的 `src/types.ts`（MIT，Copyright (c) 2026 moyuanhua），
+ * 逐字段搬运、字段名保持一致，便于把上游逻辑与规格测试一起对照。
+ * ------------------------------------------------------------------ */
+
+/** 会话权限档位（上游 P6 的四档）。 */
+export type PermissionPreset = "readonly" | "edit" | "askHigh" | "trust";
+
+/** 会话级 gate 模式（覆盖全局档位）。 */
+export type SessionGateMode = "off" | "gate";
+
+/** 模型引用（运行卡页脚展示、`/model` 切换）。 */
+export interface ModelRef {
+  readonly providerID: string;
+  readonly id: string;
+  readonly name?: string;
+}
+
+/**
+ * 会话的工作状态基线（上游 P7 的"话题根卡"内容）：root 卡在状态变化时整卡重渲染，
+ * 靠这份持久化内容避免丢摘要。本插件在 M4/M5 接话题根卡时使用。
+ */
+export interface SessionRootCardBase {
+  readonly style: "created" | "resumed";
+  readonly sessionID: string;
+  readonly title: string;
+  readonly dir?: string;
+  readonly model?: string;
+  readonly perm?: string;
+  readonly updatedAt?: number;
+  readonly summary?: string;
+  readonly summaryLabel?: string;
+  readonly summaryPending?: true;
+  readonly compactPending?: true;
+  readonly compactError?: string;
+  readonly compactButton?: true;
+  readonly note?: string;
+  readonly openedTopic?: true;
+}
+
+/** session 索引：会话 → 飞书投递目标与元数据（上游 `SessionLink`）。 */
+export interface SessionLink {
+  readonly chatId: string;
+  /** 触发该会话的飞书用户 open_id（审批卡 token 绑定对象）。 */
+  readonly openId: string;
+  /**
+   * 话题锚点消息 id。存在即表示该会话绑定在某个飞书话题内，
+   * 异步出站（审批卡 / 失败提示）引用它回复，回复自然留在话题内。
+   */
+  readonly replyMessageId?: string;
+  /** 会话创建时选择的权限预设（展示与 gate 决策）。 */
+  readonly perm?: PermissionPreset;
+  /** 会话级 gate 模式。 */
+  readonly gateMode?: SessionGateMode;
+  /** 会话工作目录（`/cd` 后更新）。 */
+  readonly dir?: string;
+  /** 当前模型（`/model` 后更新；运行卡页脚展示）。 */
+  readonly model?: ModelRef;
+  /** 本会话已放行的工具（审批卡「本会话内允许」）。 */
+  readonly allowActions?: readonly string[];
+  /** 话题根卡基线内容。 */
+  readonly rootCard?: SessionRootCardBase;
+}
+
+/** 话题 → 会话映射（上游 `ThreadLink`）。 */
+export interface ThreadLink {
+  readonly sessionID: string;
+  readonly chatId: string;
+  readonly openId: string;
+  /** 话题根消息 id；回复它可留在话题内（审批卡等异步出站使用）。 */
+  readonly anchorMessageId?: string;
 }
 
 export interface MemoryStorageOptions {

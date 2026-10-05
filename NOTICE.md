@@ -7,13 +7,34 @@
 `opencode-feishu-plugin` — <https://github.com/moyuanhua/opencode-feishu-plugin>
 MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同许可同作者）
 
-以下文件为**逐行搬运**（仅调整相对 import 路径 / 包名，未改逻辑），保留原文件头注释与出处标注：
+以下文件为**逐行搬运**（仅调整相对 import 路径 / 包名 / 宿主存储适配，未改逻辑），保留原文件头注释与出处标注：
 
 | 本仓库文件 | 来源文件 |
 |---|---|
 | `src/utils/ttl-map.ts` | `src/utils/ttl-map.ts` |
 | `src/security/token.ts` | `src/security/token.ts` |
+| `src/security/allowlist.ts` | `src/security/allowlist.ts` |
+| `src/logger.ts` | `src/logger.ts` |
+| `src/bridge/routing.ts` | `src/feishu/routing.ts` |
+| `src/bridge/delivery.ts` | `src/feishu/delivery.ts` |
+| `src/bridge/session-map.ts` | `src/feishu/session-map.ts` |
+| `src/feishu/cards.ts` | `src/feishu/cards.ts` |
+| `src/feishu/card-limits.ts` | `src/feishu/card-limits.ts` |
+| `src/bridge/run-state.ts` | `src/feishu/run-state.ts` |
+| `src/bridge/run-renderer.ts` | `src/feishu/run-renderer.ts` |
+
+**规格测试同样搬运**（"先搬上游测试作规格，再让实现通过"）：
+
+| 本仓库测试 | 来源测试 |
+|---|---|
 | `test/token.test.ts` | `test/token.test.ts` |
+| `test/routing.test.ts` | `test/routing.test.ts` |
+| `test/delivery.test.ts` | `test/delivery.test.ts` |
+| `test/session-map.test.ts` | `test/session-map.test.ts` |
+
+宿主适配（本仓库新增，非搬运）：`src/dsh/port.ts`（`ctx.agents` / `createUserMessage`）、
+`src/dsh/storage.ts`（`ctx.storageDomain` → 上游 KV 端口）、`src/dsh/source.ts`（`MessageSourceMap` 增强）、
+`src/bridge/outbound.ts`（运行卡控制器）、`src/config.ts`、`src/index.ts`。
 
 ## 设计参考（未复制代码）
 

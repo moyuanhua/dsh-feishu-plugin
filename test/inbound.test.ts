@@ -27,20 +27,24 @@ function message(overrides: Partial<InboundMessageLike> = {}): InboundMessageLik
 }
 
 describe("decideInbound", () => {
-  test("私聊普通文本 → followup（空闲时）", () => {
+  test("私聊普通文本 → steer（空闲时 decideDelivery 返回 steer，见 delivery.ts 规格）", () => {
     expect(decideInbound(message(), BASE_FACTS)).toEqual({
       kind: "deliver",
       text: "帮我看看构建为什么失败",
-      delivery: "followup",
+      delivery: "steer",
       attachmentCount: 0,
     });
   });
 
-  test("忙碌 + steer → 插队；忙碌 + queue → 排队", () => {
+  test("空闲时恒为 steer；忙碌时按 busyDelivery 偏好（steer 插队 / queue 排队）", () => {
+    // 空闲：无论偏好都是 steer（无队可插）—— decideDelivery 规格
+    expect(decideInbound(message(), { ...BASE_FACTS, busy: false, busyDelivery: "queue" })).toMatchObject({
+      delivery: "steer",
+    });
     const busySteer = decideInbound(message(), { ...BASE_FACTS, busy: true, busyDelivery: "steer" });
     const busyQueue = decideInbound(message(), { ...BASE_FACTS, busy: true, busyDelivery: "queue" });
     expect(busySteer).toMatchObject({ kind: "deliver", delivery: "steer" });
-    expect(busyQueue).toMatchObject({ kind: "deliver", delivery: "followup" });
+    expect(busyQueue).toMatchObject({ kind: "deliver", delivery: "queue" });
   });
 
   test("bot 的消息一律忽略", () => {
@@ -128,9 +132,9 @@ describe("applyDelivery", () => {
     });
   });
 
-  test("deliver(followup) 调 followup；ignore/command 不触碰 agent", async () => {
+  test("deliver(queue) 调 followup；deliver(steer) 调 steer；ignore/command 不触碰 agent", async () => {
     const { calls, agent, port } = harness();
-    await applyDelivery({ kind: "deliver", text: "任务", delivery: "followup", attachmentCount: 0 }, message(), agent, port);
+    await applyDelivery({ kind: "deliver", text: "任务", delivery: "queue", attachmentCount: 0 }, message(), agent, port);
     await applyDelivery({ kind: "ignore", reason: "empty" }, message(), agent, port);
     await applyDelivery({ kind: "command", text: "/stop" }, message(), agent, port);
     expect(calls).toEqual(["followup"]);

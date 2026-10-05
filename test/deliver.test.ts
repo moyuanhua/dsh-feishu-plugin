@@ -12,7 +12,7 @@ const MESSAGE: InboundMessageLike = {
   content: "帮我看看构建为什么失败",
 };
 
-const DECISION = { kind: "deliver", text: "帮我看看构建为什么失败", delivery: "followup", attachmentCount: 0 } as const;
+const DECISION = { kind: "deliver", text: "帮我看看构建为什么失败", delivery: "queue", attachmentCount: 0 } as const;
 
 function harness(options: { failResolve?: boolean } = {}) {
   const created: Array<{ cwd: string; title: string }> = [];
@@ -77,7 +77,7 @@ describe("prepareDelivery / sendDelivery（先发卡再投递的顺序保证）"
 });
 
 describe("deliverInbound", () => {
-  test("首次消息：新建会话、写入映射、followup 投递", async () => {
+  test("首次消息：新建会话、写入映射、queue 投递（dsh: followup）", async () => {
     const store = new MemoryTopicStore();
     const h = harness();
     const result = await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1000 });

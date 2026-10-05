@@ -11,6 +11,7 @@
  *     本文件不再重复实现（上游的 dedup.ts 因此不需要移植）；
  *   · 命令分支在 M2 只做识别，执行留给 M3 的 `ctx.commands`。
  */
+import { decideDelivery, type Delivery } from "./delivery.js";
 import type { AgentLike, HostPort, MessageSource } from "../types.js";
 
 export interface InboundResourceLike {
@@ -58,7 +59,8 @@ export type InboundDecision =
   | {
       readonly kind: "deliver";
       readonly text: string;
-      readonly delivery: "followup" | "steer";
+      /** 上游词表：`steer` 立即插队 / `queue` 排到当前执行之后（判定见 `delivery.ts`）。 */
+      readonly delivery: Delivery;
       readonly attachmentCount: number;
     };
 
@@ -84,8 +86,9 @@ export function decideInbound(message: InboundMessageLike, facts: InboundFacts):
 
   if (/^\/[a-z]/.test(text)) return { kind: "command", text };
 
-  const delivery: "followup" | "steer" = facts.busy && facts.busyDelivery === "steer" ? "steer" : "followup";
-  return { kind: "deliver", text, delivery, attachmentCount };
+  // 投递方式用上游的 decideDelivery 判定（空闲 → steer；忙时按 busyDelivery 偏好），
+  // 不再自己写三元表达式 —— 这是"复制逻辑"的一部分。
+  return { kind: "deliver", text, delivery: decideDelivery(facts.busy, facts.busyDelivery), attachmentCount };
 }
 
 function sourceOf(message: InboundMessageLike): MessageSource {
@@ -100,8 +103,10 @@ function sourceOf(message: InboundMessageLike): MessageSource {
 /**
  * 执行投递决策。
  *
- * `busy` 的判定属于宿主侧（M3 接 `agent.status`），本函数只按决策结果调用
- * `steer()` 或 `followup()`；`inject()` 留给 M3 的"仅上下文"场景。
+ * `busy` 的判定属于宿主侧（`ExecutionTracker` 由 `src/index.ts` 用 dsh 的
+ * `agent/status` 与 `agent/inbox/*` 事件维护），本函数只按上游词表映射到 dsh 的调用：
+ * - `steer` → `agent.steer()`：提交到最近 step（空闲则起一轮）；
+ * - `queue` → `agent.followup()`：排队到下一轮并唤醒驱动器。
  */
 export async function applyDelivery(
   decision: InboundDecision,
