@@ -4,7 +4,7 @@
 
 设计目标与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 对齐，但宿主换成 dsh 的 Cordis 插件体系，并坚持**最小权限**：只申请 `im:message.p2p_msg:readonly` + `im:message:send_as_bot` 两个 scope，不申请任何群权限 —— 机器人在平台层面就收不到群消息。
 
-> 状态：**M1（骨架）**。目前已完成配置层与卡片 token 安全内核（含单测），尚未建立飞书长连接。
+> 状态：**M2（连接层）**。配置层、卡片 token 安全内核、飞书长连接 supervisor、入站决策与单人白名单已完成并有 39 个单测；已在真实 dsh 宿主里验证过"加载 + 连接失败退避"两条路径（见下"开发期验证"）。尚未接线会话投递（M3）。
 
 ## 为什么单独开一个仓库
 
@@ -50,10 +50,46 @@ dsh 接缝（M2 起接入，均已确认存在）：
 ## 里程碑
 
 - **M1 骨架** ✅ 工具链、bundle patch、配置 schema、token 内核 + 单测
-- **M2 连接**：`@larksuite/channel` 长连接 supervisor（世代化 + 指数退避 + dispose 收敛）、`/status` 命令、入站消息 → `followup/steer`
-- **M3 会话桥**：话题↔会话映射（storageDomain）、流式回显卡片、`/new` `/sessions` `/resume` `/stop`
+- **M2 连接** ✅ `@larksuite/channel` 长连接 supervisor（世代化 + 有界指数退避 + dispose 收敛）、入站决策纯函数（白名单 / 群开关 / bot 回环 / 空消息 / 命令识别）、单人 owner 绑定、结构化脱敏日志
+- **M3 会话桥**：话题↔会话映射（`ctx.storageDomain`）、投递（`followup`/`steer`）、流式回显卡片、`/new` `/sessions` `/resume` `/stop`
 - **M4 决策桥**：审批卡（四档 gate + 白名单 + token 校验）、提问卡、强停、看门狗、附件
 - **M5 发布**：扫码 onboarding、locale/icon、peer 区间对齐、兼容性矩阵与文档
+
+## 开发期验证（已完成）
+
+用**隔离的 DSH_HOME** + `--patch` 覆盖层指向本地构建产物，不碰真实 profile：
+
+```sh
+pnpm run build
+cat > /tmp/feishu-dev.patch.yml <<'YAML'
+- insert:
+    - id: feishu
+      name: '/Users/code/wps/dsh-feishu-plugin/lib/index.js'   # 绝对路径
+      config:
+        logLevel: debug
+YAML
+DSH_HOME=/tmp/dsh-feishu-dev dsh web --patch /tmp/feishu-dev.patch.yml --no-open --port 3099
+```
+
+已实测的两条路径：
+
+1. **加载路径**（无凭据）：插件被 cordis 加载、`apply()` 执行、schema 校验通过，只告警并保持禁用，宿主正常启动。
+2. **连接路径**（假凭据）：`@larksuite/channel` 正常初始化（`client ready` / `event-dispatch is ready`），`connect()` 打到真实飞书 API 后失败，supervisor 按 500→1000→2000→4000→8000→16000→30000(封顶) 退避重试，宿主照常提供服务。
+
+**部署前提**：SDK 的 `connect()` 会先调 `/open-apis/bot/v3/info` 解析 bot 身份 —— 应用**必须已添加"机器人"能力并发布版本**，否则会一直停在这一步。
+
+## 权限清单（部署时照做）
+
+| 项 | 值 |
+|---|---|
+| API 权限（必开） | `im:message.p2p_msg:readonly`、`im:message:send_as_bot` |
+| API 权限（可选，图片/文件） | `im:message:readonly` |
+| 事件订阅方式 | **使用长连接接收事件**（不要选 Webhook） |
+| 订阅事件 | `im.message.receive_v1` |
+| 回调 | `card.action.trigger`（零权限要求） |
+| 机器人能力 | 必须开启并发布版本 |
+| 可用范围 | 建议"仅本人" —— 这是单人边界的平台层保证 |
+| **不要申请** | 任何群相关 scope（`im:message.group_at_msg*`），这样机器人物理上收不到群消息 |
 
 ## 配置
 
