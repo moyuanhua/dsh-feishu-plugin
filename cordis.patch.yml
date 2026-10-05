@@ -1,0 +1,43 @@
+# dsh-feishu-plugin 的 bundle patch 层。
+#
+# 挂载方式（二选一）：
+#   · 作为组合包装进某个 profile：`dsh plugin --profile <name> add dsh-feishu-plugin`
+#   · 手工把下面那条 insert 合并进 `$DSH_HOME/profiles/<name>/cordis.patch.yml`（单 profile）
+#     或 `$DSH_HOME/cordis.patch.yml`（本机全部 profile）
+#
+# 注意（dsh patch 语义）：
+#   · 新增行必须包在 `- insert:` 里；直接写 `- id: 新id` 会被判定 entry not found 并跳过。
+#   · 对已有行改配置时 `config` 是整体替换（不是深合并），且 `name` 若写了必须与目标行一致。
+- insert:
+    - id: feishu
+      name: 'dsh-feishu-plugin'
+      config:
+        # 凭据：优先显式值，其次 appSecretRef（经 ctx.credentials 解析）。
+        # 子进程环境清洗会剔除匹配 /KEY|PASSWORD|SECRET|TOKEN/i 的父环境变量，
+        # 所以不要指望从 shell 环境继承；这里用 !!js 显式引用即可。
+        appId: !!js process.env.FEISHU_APP_ID
+        appSecret: !!js process.env.FEISHU_APP_SECRET
+        # appSecretRef: FEISHU_APP_SECRET
+        # domain: https://open.larksuite.com   # 缺省为飞书
+        # cwd: /absolute/workspace             # 缺省为宿主进程 cwd
+
+        # —— 权限边界（本插件的核心卖点：最小权限）——
+        # 默认 false：不申请任何群权限，机器人物理上收不到群消息。
+        # 打开需自行在开发者后台加 `im:message.group_at_msg:readonly` 并发布版本。
+        groupEnabled: false
+        # off 不介入 / notify 只提示 / gate 无匹配即问（默认）/ lockdown 无匹配即拒
+        permissionGate: gate
+        # allowTools: [read, glob, grep, web_fetch]   # 免审批白名单，支持 prefix*
+        # denyTools: []
+        # allowedRoots: []                            # 缺省 [用户家目录]
+        # allowUsers: []                              # open_id 白名单；空 = 仅首个发消息者绑定的 owner
+
+        # —— 交互 ——
+        busyDelivery: steer # steer 立即插队（默认）/ queue 原生排队
+        stream: true
+        staleExecutionMs: 300000 # 看门狗阈值；0 = 关闭
+        approvalTtlMs: 600000 # 审批 token 有效期
+
+        # —— 诊断 ——
+        logLevel: info
+        # logFile: true
