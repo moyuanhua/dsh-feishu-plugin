@@ -53,7 +53,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "clean": "rm -rf lib",
+    "prepare": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm test"
   },
   "license": "MIT",
