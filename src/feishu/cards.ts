@@ -55,7 +55,7 @@ const HELP_DEFAULT_TITLE = "命令帮助";
  * 文档枚举为 blue|wathet|turquoise|green|yellow|orange|red|carmine|violet|purple|indigo|grey|default，
  * 本仓库按交付契约只用其中 5 个。
  */
-export type CardTemplate = "blue" | "grey" | "green" | "red" | "orange";
+export type CardTemplate = "blue" | "grey" | "green" | "red" | "orange" | "purple";
 
 /** 运行状态 → 标题主题色：running 蓝 / done 绿 / failed 红 / stopped 灰。 */
 const RUN_TEMPLATE: Record<RunCardInput["status"], CardTemplate> = {
@@ -154,7 +154,8 @@ export function buildHelpCard(commands: readonly HelpCommand[], options: { reado
  * 按钮必须直接放进 `body.elements`；回调数据用 `behaviors:[{type:"callback", value}]`，
  * 且 `value` 必须是**对象**（事件里从 `action.value` 原样带回）。
  */
-function cardButton(text: string, type: "primary" | "default" | "danger", value: Record<string, unknown>): object {
+/** 卡片按钮（上游同名导出；按钮必须直挂 `body.elements` 且用 `behaviors` 回传 value）。 */
+export function cardButton(text: string, type: "primary" | "default" | "danger", value: Record<string, unknown>): object {
   return {
     tag: "button",
     text: { tag: "plain_text", content: text.slice(0, BUTTON_TEXT_MAX_CHARS) },

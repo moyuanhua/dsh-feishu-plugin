@@ -60,6 +60,8 @@ export interface Config {
   approvalTtlMs?: number;
   /** 审批卡最多展示多少条资源（上游 `maxResourcesShown`）。 */
   approvalMaxResourcesShown?: number;
+  /** 提问卡有效期（ms）：超时后交回宿主处理（不再由飞书接管）。 */
+  questionTtlMs?: number;
   /** 流式回填（打字机卡片）。 */
   stream?: boolean;
   /** 附件落盘目录；缺省为 <会话目录>/.dsh-feishu/inbox/。 */
@@ -112,6 +114,7 @@ export const Config: z<Config> = z.object({
   staleExecutionMs: z.number().min(0).max(3_600_000).default(300_000).description("看门狗阈值（ms）；0 = 关闭"),
   approvalTtlMs: z.number().min(30_000).max(86_400_000).default(600_000).description("审批 token 有效期（ms）"),
   approvalMaxResourcesShown: z.number().min(1).max(50).default(8).description("审批卡最多展示的资源条数"),
+  questionTtlMs: z.number().min(30_000).max(86_400_000).default(600_000).description("提问卡有效期（ms）"),
   stream: z.boolean().default(true).description("流式回填"),
   attachmentsDir: z.string().description("入站附件落盘目录"),
   maxAttachmentBytes: z
@@ -156,6 +159,7 @@ export interface ResolvedConfig {
   readonly staleExecutionMs: number;
   readonly approvalTtlMs: number;
   readonly approvalMaxResourcesShown: number;
+  readonly questionTtlMs: number;
   readonly stream: boolean;
   readonly attachmentsDir: string | undefined;
   readonly maxAttachmentBytes: number;
@@ -221,6 +225,7 @@ export function resolveConfig(raw: Config = {}): ResolvedConfig {
     staleExecutionMs: raw.staleExecutionMs ?? 300_000,
     approvalTtlMs: raw.approvalTtlMs ?? 600_000,
     approvalMaxResourcesShown: raw.approvalMaxResourcesShown ?? 8,
+    questionTtlMs: raw.questionTtlMs ?? 600_000,
     stream: raw.stream !== false,
     attachmentsDir: raw.attachmentsDir?.trim() || undefined,
     maxAttachmentBytes: raw.maxAttachmentBytes ?? 20 * 1024 * 1024,

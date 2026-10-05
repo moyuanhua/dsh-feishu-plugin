@@ -27,6 +27,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 // 仅为载入 approval 事件的类型声明合并（`approval/request` 的类型来自该包）。
 import type {} from "@deepseek-ai/dsh-user-approval";
+import type {} from "@deepseek-ai/dsh-user-questions";
 import {
   defaultSessionTitle,
   helpText,
@@ -36,6 +37,7 @@ import {
   topicTitle,
 } from "./bridge/commands.js";
 import { ApprovalBridge } from "./bridge/approval.js";
+import { QuestionBridge } from "./bridge/questions.js";
 import { deliverToSession, type DeliveryPort } from "./bridge/deliver.js";
 import { ExecutionTracker } from "./bridge/delivery.js";
 import { decideInbound, type InboundDecision, type InboundMessageLike } from "./bridge/inbound.js";
@@ -227,6 +229,18 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     },
   });
 
+  /**
+   * 提问桥：把 dsh 的 `user-questions/request` waterfall 接到飞书卡片。
+   * 与审批桥同样的安全边界：只有本桥拥有的会话才接管，其余交回宿主。
+   */
+  const questions = new QuestionBridge({
+    log,
+    cardPort,
+    getLink: async (sessionId) => (await sessionMap()).resolveBySession(sessionId),
+    isAllowed: (openId) => ownerPolicy.isAllowed(openId),
+    timeoutMs: config.questionTtlMs,
+  });
+
   async function sendNotice(
     chatId: string,
     text: string,
@@ -406,6 +420,10 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     // 审批按钮优先（审批 value 形状与强停不同，桥对非审批 value 返回 undefined）。
     const approvalResponse = await approvals.handleCardAction(event);
     if (approvalResponse !== undefined && approvalResponse !== null) return approvalResponse as CardActionResponse;
+    const questionResponse = await questions.handleCardAction(event);
+    if (questionResponse !== undefined && questionResponse !== null) {
+      return questionResponse as CardActionResponse;
+    }
 
     const token = readStopValue(event.action.value);
     if (!token) return;
@@ -498,6 +516,11 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
           await map.bindThread(message.threadId, sessionId, message.chatId, message.senderId ?? "", anchor);
         }
       }
+      // 该会话若有「等待自由文本」的提问字段，这条文本作为答案消费，不再当 prompt。
+      if (questions.consumeText(sessionId, gate.text)) {
+        log.debug("聊天文本已作为提问答案消费", { sessionId });
+        return;
+      }
       log.debug("话题路由命中会话", { source: route.source, sessionId, threadId: message.threadId });
       await runInSession(sessionId, inbound, gate);
       return;
@@ -519,6 +542,11 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
   // 审批：waterfall 直接返回结果词（只有 allowed-once 是授权）。
   ctx.on("approval/request", (req, next) =>
     approvals.handle(sessionIdOfAgent(req.agent), req, () => next()),
+  );
+
+  // 提问：waterfall 直接返回结构化答案；无法作答（无映射 / 超时 / 取消）时交回宿主。
+  ctx.on("user-questions/request", (req, next) =>
+    questions.handle(sessionIdOfAgent(req.agent), req, () => next()),
   );
 
   ctx.on("agent/assistant-stream", (payload) => {
@@ -589,12 +617,14 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       groupEnabled: config.groupEnabled,
       roots: config.allowedRoots.length,
       cardThrottleMs: config.cardThrottleMs,
+      questionTtlMs: config.questionTtlMs,
     });
     supervisor.start();
     return async () => {
       // 先置位再拆：清理期间到达的事件/消息一律短路（卸载清理是并发执行的）。
       disposed = true;
       approvals.dispose();
+      questions.dispose();
       await supervisor.stop();
       for (const sessionId of [...runCards.keys()]) {
         await settleRunCard(sessionId);
