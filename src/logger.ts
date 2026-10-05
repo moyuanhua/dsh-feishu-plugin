@@ -36,22 +36,63 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * 把 meta 里疑似密钥的键值替换成 `<redacted>`。
+ *
  * 这是纵深防御：调用方本就不该传 secret，但仍兜底。
+ *
+ * **递归**脱敏嵌套对象与数组 —— 旧版只看顶层键，于是
+ * `log.info("x", { opts: { appSecret: "…" } })` 会把密钥原样写进日志。
+ * `seen` 兼作环路保护，深度上限避免病态结构把栈打爆。
  */
 export function redactMeta(meta: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!meta) return undefined;
-  const secretKey = /(secret|token|password|pat|authorization|appsecret)/i;
   const out: Record<string, unknown> = {};
+  const seen = new WeakSet<object>();
+  seen.add(meta);
   for (const [key, value] of Object.entries(meta)) {
-    if (secretKey.test(key)) {
-      out[key] = "<redacted>";
-    } else if (typeof value === "string" && value.length > 512) {
-      out[key] = `${value.slice(0, 512)}…(len=${value.length})`;
-    } else {
-      out[key] = value;
-    }
+    out[key] = redactValue(key, value, seen, 0);
   }
   return out;
+}
+
+/**
+ * 敏感键名判定。
+ *
+ * 两段式是必要的：单一大正则会把 `pat` 误伤到 `path`（`/pat/i.test("path")` 为真），
+ * 而 `apiKey` 又必须命中。所以「词根包含」与「词尾后缀」分开判。
+ */
+const SECRET_SUBSTRING = /(secret|token|password|passwd|authorization|credential|bearer)/i;
+const SECRET_SUFFIX = /(?:_?key|_?pat)$/i;
+
+function isSecretKey(key: string): boolean {
+  return SECRET_SUBSTRING.test(key) || SECRET_SUFFIX.test(key);
+}
+
+const MAX_REDACT_DEPTH = 6;
+const MAX_STRING_LEN = 512;
+
+function redactValue(key: string, value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (isSecretKey(key)) return "<redacted>";
+  if (typeof value === "string") {
+    return value.length > MAX_STRING_LEN ? `${value.slice(0, MAX_STRING_LEN)}…(len=${value.length})` : value;
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[circular]";
+    if (depth >= MAX_REDACT_DEPTH) return value;
+    seen.add(value);
+    const mapped = value.map((item) => redactValue("", item, seen, depth + 1));
+    seen.delete(value);
+    return mapped;
+  }
+  if (isRecord(value)) {
+    if (seen.has(value)) return "[circular]";
+    if (depth >= MAX_REDACT_DEPTH) return value;
+    seen.add(value);
+    const nested: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) nested[k] = redactValue(k, v, seen, depth + 1);
+    seen.delete(value);
+    return nested;
+  }
+  return value;
 }
 
 export function createLogger(options: LoggerOptions): Logger {

@@ -60,6 +60,17 @@ export interface FeishuChannel {
   onReject(handler: (event: RejectEvent) => void): () => void;
   onReconnecting(handler: () => void): () => void;
   onReconnected(handler: () => void): () => void;
+  /**
+   * 订阅 SDK 事件表**之外**的平台事件（透传解密后的原始 payload）。
+   *
+   * 用途只有一个：机器人自定义菜单 `application.bot.menu_v6`。
+   * `@larksuite/channel` 的 `EventMap` 是封闭的，没有菜单事件，但暴露了 `onRawEvent`
+   * 作为逃生通道（sdk `dist/index.d.mts:1576`）。
+   *
+   * ⚠️ 原始事件**不过安全管线**（dmMode / 白名单 / 去重 / 群守卫都在 normalize 之后），
+   * 因此调用方必须自己再过一遍白名单 —— 见 `src/index.ts` 的菜单处理。
+   */
+  onRawEvent(eventType: string, handler: (payload: unknown) => void | Promise<void>): () => void;
   send(chatId: string, input: SendInput, options?: SendOptions): Promise<SendResult>;
   reply(
     target: Pick<NormalizedMessage, "chatId" | "messageId" | "threadId">,
@@ -110,6 +121,7 @@ export function createFeishuChannel(config: FeishuChannelConfig): FeishuChannel 
     onReject: (handler) => raw.on("reject", handler),
     onReconnecting: (handler) => raw.on("reconnecting", handler),
     onReconnected: (handler) => raw.on("reconnected", handler),
+    onRawEvent: (eventType, handler) => raw.onRawEvent(eventType, handler),
     send: (chatId, input, sendOptions) => raw.send(chatId, input, sendOptions),
     reply: (target, input, sendOptions) => raw.reply(target, input, sendOptions),
     updateCard: (messageId, card) => raw.updateCard(messageId, card),

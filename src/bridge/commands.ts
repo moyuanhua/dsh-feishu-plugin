@@ -9,7 +9,17 @@
  * - 命令分两个 scope：**主聊天流（管理台）** 与 **话题内**；话题内有白名单
  *   （`/new` `/sessions` `/use` `/resume` `/dir` `/cancel` `/form` 在话题内被禁，引导回主聊天流）。
  */
-import type { SessionEntry } from "./session-map.js";
+/**
+ * 命令表里用到的最小会话引用。
+ *
+ * 旧版这里 import 的是 `SessionEntry`（我们自己镜像的会话清单条目）。
+ * 镜像删掉之后，`/use` 的序号/前缀匹配改为直接对 `session-catalog` 产出的行做匹配，
+ * 因此只需要 id + 标题这两个字段。
+ */
+export interface SessionRef {
+  readonly sessionID: string;
+  readonly title: string;
+}
 
 export type CommandName =
   | "new"
@@ -37,25 +47,81 @@ export interface ParsedCommand {
   readonly raw: string;
 }
 
+/**
+ * 命令规格表 —— **帮助文案与命令路由的单一真源**。
+ *
+ * 缺陷 6 的根因是"帮助文案"和"真正执行命令的 switch"是两份手写清单，于是
+ * `/help` 会一本正经地列出 `/dir` `/model` `/resume` `/now` `/cancel` `/cd`，
+ * 而用户敲下去只会得到「尚未移植」——帮助卡本身在误导用户。
+ *
+ * 现在只有这一张表：`/help` 由它生成，话题内白名单也由它派生。
+ * `implemented: false` 的命令**不会出现在帮助里**，但敲了仍会得到明确回报。
+ */
+export interface CommandSpec {
+  readonly name: CommandName;
+  /** 展示用法（帮助卡用）。 */
+  readonly usage: string;
+  readonly summary: string;
+  /** 是否已经真正实现；false = 不进帮助（但敲了有明确回报）。 */
+  readonly implemented: boolean;
+  /** 是否允许在话题内使用；false = 引导回主聊天流。 */
+  readonly inThread: boolean;
+}
+
+export const COMMAND_SPECS: readonly CommandSpec[] = [
+  {
+    name: "new",
+    usage: "/new [标题]",
+    summary: "新建会话（解析模型与工作目录，失败会说明原因）",
+    implemented: true,
+    inThread: false,
+  },
+  { name: "form", usage: "/form [标题]", summary: "同上，`/new` 的等价入口", implemented: true, inThread: false },
+  {
+    name: "sessions",
+    usage: "/sessions（别名 /ls）",
+    summary: "列出本聊天的会话",
+    implemented: true,
+    inThread: false,
+  },
+  {
+    name: "use",
+    usage: "/use <序号|会话id前缀>",
+    summary: "切换当前会话",
+    implemented: true,
+    inThread: false,
+  },
+  { name: "current", usage: "/current", summary: "查看当前（话题内为「本话题」）会话", implemented: true, inThread: true },
+  { name: "stop", usage: "/stop", summary: "中断正在跑的任务", implemented: true, inThread: true },
+  {
+    name: "steer",
+    usage: "/steer <文本>",
+    summary: "立即插队发送一条消息（打断当前步骤）",
+    implemented: true,
+    inThread: true,
+  },
+  { name: "perm", usage: "/perm [档位]", summary: "查看 / 修改本会话的权限档位", implemented: true, inThread: true },
+  { name: "help", usage: "/help", summary: "显示本帮助", implemented: true, inThread: true },
+
+  // —— 尚未实现：**不进 `/help`**。敲了会得到一条明确说明，绝不假装成功。——
+  { name: "model", usage: "/model [关键词]", summary: "查看 / 切换模型", implemented: false, inThread: true },
+  { name: "cd", usage: "/cd <绝对路径>", summary: "切换会话工作目录", implemented: false, inThread: true },
+  { name: "now", usage: "/now", summary: "把排队消息提升为立即执行", implemented: false, inThread: true },
+  { name: "dir", usage: "/dir <绝对路径>", summary: "预填建会话表单的工作目录", implemented: false, inThread: false },
+  { name: "cancel", usage: "/cancel", summary: "放弃建会话表单", implemented: false, inThread: false },
+  { name: "resume", usage: "/resume [序号]", summary: "续聊历史会话", implemented: false, inThread: false },
+];
+
+const SPEC_BY_NAME: ReadonlyMap<CommandName, CommandSpec> = new Map(
+  COMMAND_SPECS.map((spec) => [spec.name, spec]),
+);
+
+/** 命令词 → 规范名。**由规格表派生**，另加三个历史别名。 */
 const ALIASES: Readonly<Record<string, CommandName>> = {
-  new: "new",
-  sessions: "sessions",
+  ...Object.fromEntries(COMMAND_SPECS.map((spec) => [spec.name, spec.name])),
   ls: "sessions",
-  use: "use",
-  resume: "resume",
-  current: "current",
-  stop: "stop",
-  help: "help",
-  dir: "dir",
-  cd: "cd",
-  model: "model",
-  perm: "perm",
   permission: "perm",
   permissions: "perm",
-  cancel: "cancel",
-  form: "form",
-  steer: "steer",
-  now: "now",
 };
 
 /** 是否是命令（以 `/` 开头）。 */
@@ -89,7 +155,7 @@ export function shortSessionId(sessionID: string): string {
 }
 
 export type SessionMatch =
-  | { readonly ok: true; readonly entry: SessionEntry }
+  | { readonly ok: true; readonly entry: SessionRef }
   | { readonly ok: false; readonly reason: "empty" | "not_found" | "ambiguous" };
 
 /**
@@ -97,7 +163,7 @@ export type SessionMatch =
  * - 纯数字 → 1-based 序号
  * - 其它 → 会话 id 前缀匹配（唯一才算命中）
  */
-export function matchSession(arg: string, sessions: readonly SessionEntry[]): SessionMatch {
+export function matchSession(arg: string, sessions: readonly SessionRef[]): SessionMatch {
   const query = arg.trim();
   if (!query) return { ok: false, reason: "empty" };
   if (/^\d+$/.test(query)) {
@@ -112,7 +178,7 @@ export function matchSession(arg: string, sessions: readonly SessionEntry[]): Se
 }
 
 /** 单行会话展示：`1. 标题（短id） ← 当前`。 */
-export function sessionLine(entry: SessionEntry, index: number, activeID?: string): string {
+export function sessionLine(entry: SessionRef, index: number, activeID?: string): string {
   const mark = activeID && entry.sessionID === activeID ? " ← 当前" : "";
   const title = entry.title.trim() || "(未命名)";
   return `${index + 1}. ${title}（\`${shortSessionId(entry.sessionID)}\`）${mark}`;
@@ -131,58 +197,34 @@ export function useErrorText(reason: "empty" | "not_found" | "ambiguous"): strin
   }
 }
 
-/** `/help` 文案。`scope` 决定显示哪些命令（话题内不展示被禁命令）。 */
+/**
+ * `/help` 文案 —— **由 `COMMAND_SPECS` 生成**，不再手写。
+ *
+ * 因此它不可能再列出未实现的命令：只要 `implemented` 是 false 就不出现。
+ * `scope` 决定显示哪些（话题内只显示 `inThread` 为真的）。
+ */
 export function helpText(scope: "main" | "thread" = "main"): string {
-  if (scope === "thread") {
-    return [
-      "**飞书话题命令**",
-      "`/current` — 查看本话题对应的会话",
-      "`/stop` — 中断本话题会话正在跑的任务",
-      "`/steer <文本>` — 发送一条**立即插队**的消息（打断当前步骤插入执行）",
-      "`/now` — 把本会话**已排队**的未执行消息全部改为立即插队执行",
-      "`/model [关键词]` — 查看 / 切换本话题会话的模型",
-      "`/perm [档位]` — 查看 / 修改本话题会话的权限预设",
-      "`/cd <绝对路径>` — 切换本话题会话的工作目录",
-      "`/help` — 显示本帮助",
-      "",
-      "建会话与会话管理（`/new` `/form` `/sessions` `/use` `/dir` `/cancel`）请回到**主聊天流**操作。",
-    ].join("\n");
-  }
-  return [
-    "**飞书会话命令**",
-    "`/new [标题]` — 直接打开发建会话表单卡（与 `/form` 等价，提交后自动开话题）",
-    "`/form [标题]` — 同上，`/new` 的等价入口",
-    "`/dir <绝对路径>` — 预填表单的工作目录（留空 = 允许根目录；不存在会自动创建）",
-    "`/model [关键词]` — 预填表单的模型；话题内切换当前会话模型",
-    "`/perm [档位]` — 预填表单的权限；话题内修改当前会话权限",
-    "`/cancel` — 放弃建会话表单",
-    "`/sessions`（别名 `/ls`）— **全部**会话列表卡片（含「▶️ 进入话题」）",
-    "`/use <序号|会话id前缀>` — 切换当前会话（旧行为）",
-    "`/resume [序号]` — 续聊历史会话：对最近更新（或第 N 个）会话直接开话题",
-    "`/current` — 查看当前会话",
-    "`/stop` — 中断当前会话正在跑的任务",
-    "`/steer <文本>` — 发送一条**立即插队**的消息（打断当前步骤插入执行）",
-    "`/now` — 把当前会话**已排队**的未执行消息全部改为立即插队执行",
-    "`/help` — 显示本帮助",
-  ].join("\n");
+  const visible = COMMAND_SPECS.filter(
+    (spec) => spec.implemented && (scope === "main" || spec.inThread),
+  );
+  const header = scope === "thread" ? "**飞书话题命令**" : "**飞书会话命令**";
+  const lines = visible.map((spec) => `\`${spec.usage}\` — ${spec.summary}`);
+  const tail =
+    scope === "thread"
+      ? ["", "建会话与会话管理（`/new`、`/form`、`/sessions`、`/use`）请回到**主聊天流**操作。"]
+      : ["", "_未列出的命令尚未实现；敲了会得到明确说明。_"];
+  return [header, ...lines, ...tail].join("\n");
 }
 
-/** 话题内允许的命令白名单：current/stop/steer/now/help + 会话内操作 model/perm/cd。 */
-const THREAD_ALLOWED: ReadonlySet<CommandName> = new Set<CommandName>([
-  "current",
-  "stop",
-  "steer",
-  "now",
-  "help",
-  "model",
-  "perm",
-  "cd",
-  "unknown",
-]);
-
-/** 话题内该命令是否可用；`/new` `/sessions` `/use` `/dir` `/cancel` 在话题内被禁。 */
+/**
+ * 话题内允许的命令白名单 —— 同样**由规格表派生**（`inThread`）。
+ *
+ * `unknown` 特意放行：用户敲了个不存在的命令词时，应该收到「未知命令」，
+ * 而不是被误导成「话题内不支持」。
+ */
 export function isCommandAllowedInThread(name: CommandName): boolean {
-  return THREAD_ALLOWED.has(name);
+  if (name === "unknown") return true;
+  return SPEC_BY_NAME.get(name)?.inThread ?? true;
 }
 
 /** 话题内敲了被禁命令时的提示文案（引导去主聊天流）。 */

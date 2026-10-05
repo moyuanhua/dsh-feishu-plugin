@@ -41,13 +41,22 @@ const TOOL_DETAIL_MAX = 200;
 const REASON_MAX = 200;
 const TRUNCATED_SUFFIX = "…(已截断)";
 
-/** 运行状态图标（必现于首行，便于断言与扫读）。 */
+/** 运行状态图标（放进卡片 header 标题，便于扫读；正文不再重复标题）。 */
 const STATUS_ICON: Record<RunStatus, string> = {
   running: "⏳",
   done: "✅",
   failed: "❌",
   stopped: "⏹",
 };
+
+/** 卡片 header 标题：`<图标> <会话标题>`。标题只在这里出现一次（旧版正文里又渲染一遍是 bug）。 */
+export function runCardTitle(title: string, status: RunStatus): string {
+  return `${STATUS_ICON[status]} ${title}`;
+}
+
+/** 正文为空的兜底：把"没有内容"说清楚，避免用户把空卡片当成一句回答。 */
+const EMPTY_BODY_RUNNING = "_（运行中，尚未产生输出…）_";
+const EMPTY_BODY_TERMINAL = "_（本轮没有文本输出）_";
 
 /** 单个工具块的图标（与运行状态图标区分：运行中的工具用 🔧）。 */
 const TOOL_ICON: Record<"running" | "ok" | "error", string> = {
@@ -57,7 +66,7 @@ const TOOL_ICON: Record<"running" | "ok" | "error", string> = {
 };
 
 export interface RunRenderOptions {
-  readonly title: string;
+  /** 页脚（模型/耗时/状态）。 */
   readonly footer?: string;
   /** 运行中才渲染强停按钮（终态时忽略）。 */
   readonly stop?: { readonly token: string };
@@ -117,7 +126,7 @@ function renderToolLines(
  */
 export function renderRunMarkdown(state: RunState, options: RunRenderOptions): string {
   const terminal = isTerminal(state);
-  const parts: string[] = [`${STATUS_ICON[state.status]} **${options.title}**`];
+  const parts: string[] = [];
 
   if (state.reason) parts.push(`⚠️ ${truncateSingleLine(state.reason, REASON_MAX)}`);
 
@@ -138,6 +147,12 @@ export function renderRunMarkdown(state: RunState, options: RunRenderOptions): s
 
   // 强停按钮：只占位成一行 markdown（含仍需回传的 token），由调用方替换为真实卡片按钮元素。
   if (options.stop && !terminal) parts.push(`⏹ 强制停止（token: ${options.stop.token}）`);
+
+  // 正文为空时必须显式说明，否则"只有 header 的卡片"看起来像一句回答。
+  // 运行中与终态用不同文案：前者是"还没开始输出"，后者是"这一轮确实没有文本"。
+  if (parts.every((part) => part.startsWith("⏹ "))) {
+    parts.push(terminal ? EMPTY_BODY_TERMINAL : EMPTY_BODY_RUNNING);
+  }
 
   return parts.join("\n\n");
 }

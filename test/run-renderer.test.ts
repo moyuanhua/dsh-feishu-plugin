@@ -1,9 +1,15 @@
 import { describe, expect, test } from "vitest";
-import { renderRunMarkdown, shouldRenderAfter, type RunRenderOptions } from "../src/bridge/run-renderer.js";
+import {
+  renderRunMarkdown,
+  runCardTitle,
+  shouldRenderAfter,
+  type RunRenderOptions,
+} from "../src/bridge/run-renderer.js";
 import { initialRunState, reduceRunState, type RunEvent, type RunState } from "../src/bridge/run-state.js";
 
 const T0 = 1_700_000_000_000;
-const BASE: RunRenderOptions = { title: "DeepSeek 运行" };
+const TITLE = "DeepSeek 运行";
+const BASE: RunRenderOptions = {};
 
 type ToolBlock = RunState["tools"][number];
 
@@ -27,25 +33,52 @@ function run(events: readonly RunEvent[]): RunState {
   return state;
 }
 
-describe("renderRunMarkdown：状态图标与标题", () => {
+describe("runCardTitle：状态图标只出现在卡片 header", () => {
+  // 缺陷回归：旧实现把 `⏳ **<title>**` 同时写进 header 和正文，于是"没有正文"时
+  // 用户看到的正文就是一句像回答的标题（截图里的 "✅ **安装dlink**"）。
   test("四种运行状态各有独立图标", () => {
-    expect(renderRunMarkdown(stateWith({ status: "running" }), BASE)).toContain("⏳ **DeepSeek 运行**");
-    expect(renderRunMarkdown(stateWith({ status: "done" }), BASE)).toContain("✅ **DeepSeek 运行**");
-    expect(renderRunMarkdown(stateWith({ status: "failed" }), BASE)).toContain("❌ **DeepSeek 运行**");
-    expect(renderRunMarkdown(stateWith({ status: "stopped" }), BASE)).toContain("⏹ **DeepSeek 运行**");
+    expect(runCardTitle(TITLE, "running")).toBe("⏳ DeepSeek 运行");
+    expect(runCardTitle(TITLE, "done")).toBe("✅ DeepSeek 运行");
+    expect(runCardTitle(TITLE, "failed")).toBe("❌ DeepSeek 运行");
+    expect(runCardTitle(TITLE, "stopped")).toBe("⏹ DeepSeek 运行");
   });
 
-  test("无正文、无工具时只输出标题行，不留尾部空行", () => {
-    const md = renderRunMarkdown(stateWith({}), BASE);
-    expect(md).toBe("⏳ **DeepSeek 运行**");
+  test("正文不再包含标题", () => {
+    for (const status of ["running", "done", "failed", "stopped"] as const) {
+      const md = renderRunMarkdown(stateWith({ status, text: "正文" }), BASE);
+      expect(md).not.toContain(TITLE);
+      expect(md).toBe("正文");
+    }
+  });
+});
+
+describe("renderRunMarkdown：空正文必须显式说明", () => {
+  test("运行中且没有任何内容 → 说明尚未产生输出，不是空白卡", () => {
+    expect(renderRunMarkdown(stateWith({}), BASE)).toBe("_（运行中，尚未产生输出…）_");
+  });
+
+  test("终态且没有任何内容 → 说明本轮没有文本输出", () => {
+    expect(renderRunMarkdown(stateWith({ status: "done" }), BASE)).toBe("_（本轮没有文本输出）_");
+    expect(renderRunMarkdown(stateWith({ status: "stopped" }), BASE)).toBe("_（本轮没有文本输出）_");
+  });
+
+  test("只有强停按钮时仍然算没有正文", () => {
+    const md = renderRunMarkdown(stateWith({}), { ...BASE, stop: { token: "t" } });
+    expect(md).toContain("_（运行中，尚未产生输出…）_");
+  });
+
+  test("有失败原因时不再补空正文说明（原因本身已经是内容）", () => {
+    const md = renderRunMarkdown(stateWith({ status: "failed", reason: "构建失败" }), BASE);
+    expect(md).toBe("⚠️ 构建失败");
+    expect(md).not.toContain("本轮没有文本输出");
   });
 
   test("reason 单独成行；没有 reason 时不出现告警行", () => {
     const withReason = renderRunMarkdown(stateWith({ status: "failed", reason: "构建失败：tsc 报错" }), BASE);
     expect(withReason).toContain("⚠️ 构建失败：tsc 报错");
-    expect(withReason.split("\n\n")[1]).toBe("⚠️ 构建失败：tsc 报错");
+    expect(withReason.split("\n\n")[0]).toBe("⚠️ 构建失败：tsc 报错");
 
-    expect(renderRunMarkdown(stateWith({ status: "failed" }), BASE)).not.toContain("⚠️");
+    expect(renderRunMarkdown(stateWith({ status: "failed", text: "x" }), BASE)).not.toContain("⚠️");
   });
 });
 
@@ -73,7 +106,7 @@ describe("renderRunMarkdown：正文截断", () => {
       "…(已截断)",
     );
     expect(renderRunMarkdown(stateWith({ text: "" }), { ...BASE, maxTextChars: 0 })).toBe(
-      "⏳ **DeepSeek 运行**",
+      "_（运行中，尚未产生输出…）_",
     );
   });
 });
@@ -130,7 +163,7 @@ describe("renderRunMarkdown：maxToolBlocks 折叠", () => {
 
   test("自定义 maxToolBlocks 生效，且摘要行在合并行之前", () => {
     const md = renderRunMarkdown(stateWith({ tools: many.slice(0, 5) }), { ...BASE, maxToolBlocks: 3 });
-    const lines = md.split("\n\n")[1]!.split("\n");
+    const lines = md.split("\n");
 
     expect(lines[0]).toBe("…另有 2 个工具调用");
     expect(lines[1]).toBe("🔧 tool-05 ×3");
@@ -192,7 +225,6 @@ describe("renderRunMarkdown：footer 与强停按钮", () => {
 describe("renderRunMarkdown：纯函数与稳定性", () => {
   test("同一状态 + 同一选项渲染两次完全一致，且不改动 options", () => {
     const options: RunRenderOptions = {
-      title: "DeepSeek 运行",
       footer: "1s",
       stop: { token: "t" },
       maxTextChars: 32,
@@ -208,7 +240,6 @@ describe("renderRunMarkdown：纯函数与稳定性", () => {
     expect(renderRunMarkdown(state, options)).toBe(first);
     expect(options).toStrictEqual(snapshot);
     expect(first.split("\n\n")).toStrictEqual([
-      "⏳ **DeepSeek 运行**",
       "正文",
       "✅ read_file — 12 行",
       "1s",
@@ -216,7 +247,7 @@ describe("renderRunMarkdown：纯函数与稳定性", () => {
     ]);
   });
 
-  test("末尾 patch 与初始渲染结构一致：标题 → 正文 → 工具 → footer", () => {
+  test("末尾 patch 与初始渲染结构一致：正文 → 工具 → footer（标题在 header 里）", () => {
     const done = run([
       { type: "text-delta", text: "流式" },
       { type: "assistant-message", text: "最终答案" },
@@ -226,13 +257,7 @@ describe("renderRunMarkdown：纯函数与稳定性", () => {
     ]);
     const md = renderRunMarkdown(done, { ...BASE, footer: "2s" });
 
-    expect(md.split("\n\n")).toStrictEqual([
-      "❌ **DeepSeek 运行**",
-      "⚠️ 命令失败",
-      "最终答案",
-      "❌ bash — exit 1",
-      "2s",
-    ]);
+    expect(md.split("\n\n")).toStrictEqual(["⚠️ 命令失败", "最终答案", "❌ bash — exit 1", "2s"]);
   });
 
   test("detail 单行化并截断到 200 字符", () => {

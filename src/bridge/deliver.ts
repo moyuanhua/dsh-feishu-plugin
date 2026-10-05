@@ -16,8 +16,17 @@ import type { AttachmentStorePort, HostPort } from "../types.js";
 export type DeliverDecision = Extract<InboundDecision, { kind: "deliver" }>;
 
 export interface DeliveryPort extends HostPort {
-  /** 新建一个 dsh 会话，返回 sessionId。 */
-  createSession(input: { readonly cwd: string; readonly title: string }): Promise<string>;
+  /**
+   * 新建一个 dsh 会话，返回 sessionId。
+   *
+   * `cwd` 与 `model` 都是**必填**：调用方必须先通过 `bridge/dirs.ts` 与
+   * `dsh/model.ts` 把两者确定下来。让"缺参数"变成编译错误，而不是运行时的废会话。
+   */
+  createSession(input: {
+    readonly cwd: string;
+    readonly title: string;
+    readonly model: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string };
+  }): Promise<string>;
   /** 附件入库端口（由 `src/dsh/port.ts` 接 `ctx.attachments`）。 */
   readonly attachments?: AttachmentStorePort;
 }

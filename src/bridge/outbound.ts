@@ -14,13 +14,30 @@ import { enforceCardLimits } from "../feishu/card-limits.js";
 import { buildRunCard } from "../feishu/cards.js";
 import type { RunEvent, RunState } from "./run-state.js";
 import { initialRunState, isTerminal, reduceRunState } from "./run-state.js";
-import { renderRunMarkdown, shouldRenderAfter } from "./run-renderer.js";
+import { renderRunMarkdown, runCardTitle, shouldRenderAfter } from "./run-renderer.js";
 import type { Logger } from "../types.js";
 
-/** 出站端口：由飞书通道实现（`channel.send({card})` / `channel.updateCard`）。 */
+/**
+ * 出站目标。
+ *
+ * **`replyTo` 不是可选的装饰**：飞书的话题（thread）不是"发到哪里"，而是"回复谁"。
+ * 顶层 `send` 出去的卡片会落在主聊天流里 —— 实测就是这样：用户在话题里回复，
+ * 机器人的卡片却出现在主聊天流，话题看着像断了。
+ *
+ * 上游用的是 `im.message.reply`（回复触发消息），SDK 的 `reply()` 会在
+ * `threadId` 存在时把回复保持在话题内。所以出站一律带 `replyTo`。
+ */
+export interface OutboundTarget {
+  readonly chatId: string;
+  /** 回复哪条消息。有它就留在那条消息所在的话题里。 */
+  readonly replyTo?: string;
+  readonly threadId?: string;
+}
+
+/** 出站端口：由飞书通道实现（`channel.send` 顶层发 / `channel.reply` 回复进入话题）。 */
 export interface CardPort {
-  /** 发一张新卡片，返回 messageId。 */
-  sendCard(chatId: string, card: object): Promise<string>;
+  /** 发一张卡片，返回 messageId。带 `replyTo` 时回复该消息（从而留在话题内）。 */
+  sendCard(target: OutboundTarget, card: object): Promise<string>;
   /** 覆盖更新一张已发出的卡片。 */
   patchCard(messageId: string, card: object): Promise<void>;
 }
@@ -54,23 +71,55 @@ export interface SessionEventLike {
   readonly data?: {
     readonly name?: string;
     readonly callId?: unknown;
-    readonly error?: { readonly reason?: string };
+    readonly error?: ToolResultErrorLike;
     readonly message?: {
       readonly isError?: boolean;
+      readonly toolCallId?: unknown;
       readonly content?: readonly { readonly type?: string; readonly text?: string }[];
     };
     readonly stream?: readonly { readonly chunk?: { readonly type?: string; readonly text?: string } }[];
-    readonly reason?: { readonly kind?: string };
+    readonly reason?: TurnEndReasonLike;
   };
   // —— 平铺兼容（单测/未来版本） ——
   readonly name?: string;
-  readonly error?: { readonly reason?: string };
+  readonly error?: ToolResultErrorLike;
   readonly message?: {
     readonly isError?: boolean;
+    readonly toolCallId?: unknown;
     readonly content?: readonly { readonly type?: string; readonly text?: string }[];
   };
   readonly stream?: readonly { readonly chunk?: { readonly type?: string; readonly text?: string } }[];
-  readonly reason?: { readonly kind?: string };
+  readonly reason?: TurnEndReasonLike;
+}
+
+/**
+ * `tool/result` 的 `error`（仅 `message.isError === true` 时允许存在）。
+ * 形状取自 `dsh-session` 的 `SessionEventMap['tool/result']`。
+ */
+export interface ToolResultErrorLike {
+  readonly name?: string;
+  readonly code?: string;
+  readonly reason?: string;
+}
+
+/**
+ * `turn/end` 的 `reason`（dsh 的 `TurnEndReason`，`dsh-session/lib/types/types.d.ts:165`）。
+ *
+ * 这是**与宿主版本强耦合**的词汇表：dsh 明确声明它是 merge-extensible sum type，
+ * 插件可合并新变体。因此映射必须**穷尽已知分支**，并对未知分支**响亮失败**
+ * ——绝不能像旧实现那样用 `default → done` 把失败吞成成功（那正是"显示 ✅ 其实报错"
+ * 的根因）。
+ */
+export interface TurnEndReasonLike {
+  readonly kind?: string;
+  /** `aborted` 分支：取消原因 `TurnEndCancelCause`。 */
+  readonly reason?: { readonly kind?: string; readonly reason?: string };
+  /** `error` 分支：结构化失败事实 `LlmFailure`（`dsh-llm/lib/types/types.d.ts:26`）。 */
+  readonly error?: {
+    readonly message?: string;
+    readonly code?: string;
+    readonly status?: number;
+  };
 }
 
 /** 取事件业务字段：信封优先，平铺兜底。 */
@@ -121,8 +170,10 @@ export function mapSessionEvent(event: SessionEventLike): RunEvent | undefined {
       const text = extractAssistantText(event);
       return text ? { type: "assistant-message", text } : undefined;
     }
-    case "turn/end":
-      return { type: "turn-end", outcome: mapTurnOutcome(payload.reason?.kind) };
+    case "turn/end": {
+      const { outcome, reason } = describeTurnEnd(payload.reason);
+      return { type: "turn-end", outcome, ...(reason ? { reason } : {}) };
+    }
     default:
       return undefined;
   }
@@ -136,14 +187,73 @@ function toolNameOf(payload: { readonly name?: string }): string | undefined {
   return payload.name;
 }
 
-function mapTurnOutcome(kind: string | undefined): "done" | "failed" | "stopped" {
-  switch (kind) {
+/**
+ * `TurnEndReason` → 运行卡终态。**穷尽 dsh 的 7 个分支**（见 `TurnEndReasonMap`）。
+ *
+ * 设计约定：
+ * - 已知分支逐条给出**用户看得懂的中文原因**，而不是把 `kind` 直接抛给用户；
+ * - `max-tokens` 是**局部成功**：轮次正常结束，但输出可能被截断，所以状态仍是 `done`，
+ *   只附一条警告 —— 这是 7 个分支里唯一"完成但有话要说"的情况；
+ * - `blocked` 与 `error` 都是失败，但原因不同（策略拦截 vs 模型/传输失败），文案分开；
+ * - **未知分支一律判失败**：宁可误报一次失败，也不能把失败显示成 ✅。
+ *   dsh 的词汇表是 merge-extensible 的，未来加分支时这里会立刻暴露成 ❌ + 未知原因，
+ *   而不是静默变绿。
+ */
+export function describeTurnEnd(reason: TurnEndReasonLike | undefined): {
+  readonly outcome: "done" | "failed" | "stopped";
+  readonly reason?: string;
+} {
+  switch (reason?.kind) {
+    case "completed":
+      return { outcome: "done" };
+
+    case "max-tokens":
+      return { outcome: "done", reason: "输出达到模型上限，内容可能被截断" };
+
     case "aborted":
-      return "stopped";
+      return { outcome: "stopped", reason: describeCancelCause(reason.reason) };
+
+    case "interrupted":
+      return { outcome: "stopped", reason: "上一轮未正常结束（进程中断后恢复）" };
+
     case "blocked":
-      return "failed";
+      return { outcome: "failed", reason: "本轮被策略拦截，未执行" };
+
+    case "error": {
+      const message = reason.error?.message?.trim() || "模型请求失败（未提供原因）";
+      const code = reason.error?.code?.trim();
+      return { outcome: "failed", reason: code ? `${message}（${code}）` : message };
+    }
+
+    // fork 种子构造时关闭的轮次，只会出现在 fork 出来的会话里，实时不会产生。
+    case "forked":
+      return { outcome: "stopped", reason: "该轮在 fork 边界被关闭" };
+
+    default: {
+      const kind = reason?.kind;
+      return {
+        outcome: "failed",
+        reason: kind ? `未知的结束原因：${kind}` : "轮次结束但未提供原因",
+      };
+    }
+  }
+}
+
+/** `aborted` 分支的取消原因 → 用户可读文案。 */
+function describeCancelCause(cause: { readonly kind?: string; readonly reason?: string } | undefined): string {
+  switch (cause?.kind) {
+    case "user":
+      return "已按你的请求中断";
+    case "parent":
+      return "已被父任务中断";
+    case "hook":
+      return cause.reason?.trim() ? `已被钩子中断：${cause.reason.trim()}` : "已被钩子中断";
+    case "disposed":
+      return "执行环境已释放";
+    case "legacy":
+      return "已中断";
     default:
-      return "done";
+      return "已中断";
   }
 }
 
@@ -152,7 +262,8 @@ function mapTurnOutcome(kind: string | undefined): "done" | "failed" | "stopped"
  * ------------------------------------------------------------------ */
 
 export interface RunCardOptions {
-  readonly chatId: string;
+  /** 出站目标（chatId + 可选 replyTo/threadId）。 */
+  readonly target: OutboundTarget;
   /** 卡片标题（会话标题）。 */
   readonly title: string;
   /** 强停按钮的签名 token；缺省则不渲染按钮。 */
@@ -203,7 +314,7 @@ export class RunCard {
   /** 发出首张运行卡。 */
   async start(): Promise<void> {
     this.startPromise ??= (async () => {
-      this.messageId = await this.port.sendCard(this.options.chatId, this.buildCard());
+      this.messageId = await this.port.sendCard(this.options.target, this.buildCard());
       this.lastRenderedAt = this.now();
       this.log.debug("运行卡已发出", { messageId: this.messageId });
     })();
@@ -276,13 +387,13 @@ export class RunCard {
 
   private buildCard(): object {
     const markdown = renderRunMarkdown(this.state, {
-      title: this.options.title,
       ...(this.options.footer ? { footer: this.options.footer } : {}),
       ...(this.options.maxTextChars !== undefined ? { maxTextChars: this.options.maxTextChars } : {}),
       ...(this.options.maxToolBlocks !== undefined ? { maxToolBlocks: this.options.maxToolBlocks } : {}),
     });
     const card = buildRunCard({
-      title: this.options.title,
+      // 标题（含状态图标）只出现在 header；正文不再重复（见 run-renderer 的说明）。
+      title: runCardTitle(this.options.title, this.state.status),
       markdown,
       status: this.state.status,
       ...(this.options.footer ? { footer: this.options.footer } : {}),
@@ -297,6 +408,6 @@ export class RunCard {
   /** 单卡正文是否已逼近元素上限（调用方据此决定是否封卡翻页）。 */
   isNearElementLimit(): boolean {
     const limit = this.options.maxCardChars ?? DEFAULT_MAX_CARD_CHARS;
-    return renderRunMarkdown(this.state, { title: this.options.title }).length >= limit;
+    return renderRunMarkdown(this.state, {}).length >= limit;
   }
 }

@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { DeliveryPort } from "../bridge/deliver.js";
 import { errorMessage } from "../logger.js";
@@ -29,8 +29,38 @@ function toSessionId(value: string): SessionId {
   return value as unknown as SessionId;
 }
 
-export function createDshPort(ctx: Context, log: Logger): DeliveryPort {
+/** 传给 `ctx.agents` 的路由选择（provider/model 必填）。 */
+export interface AgentModelOptions {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+export interface DshPortOptions {
+  /**
+   * 恢复会话时重放模型路由。
+   *
+   * **这是必须的**：`ctx.agents.resume()` 不会记住原来的 `agentOptions`，如果不重新给，
+   * 恢复出来的 agent 同样会在第一次模型请求时抛 `has no provider/model` ——
+   * 与"建会话没给模型"是同一个缺陷的另一个入口（会话跑过一轮后 agent 被回收，
+   * 下一条消息走 resume 就又废了）。
+   */
+  readonly resolveAgentOptions?: () => AgentModelOptions | undefined;
+}
+
+export function createDshPort(ctx: Context, log: Logger, options: DshPortOptions = {}): DeliveryPort {
   let renameTitle: ((session: unknown, title: string) => void) | undefined;
+
+  /** 把模型选择转成 dsh 的 `AgentOptions`（reasoningEffort 是 branded 类型）。 */
+  const agentOptionsOf = (model: AgentModelOptions): {
+    provider: string;
+    model: string;
+    reasoningEffort?: ReturnType<typeof ReasoningEffortId>;
+  } => ({
+    provider: model.provider,
+    model: model.model,
+    ...(model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}),
+  });
 
   // 可选服务：缺失或稍后可用都不影响投递（cordis 在服务就绪后才执行回调）。
   // 注意 `sessionTitle` 的类型声明合并来自 `@deepseek-ai/dsh-session-title` 包，本插件不直接依赖它，
@@ -73,16 +103,31 @@ export function createDshPort(ctx: Context, log: Logger): DeliveryPort {
         }),
       }),
 
-    createSession: async ({ cwd, title }) => {
+    createSession: async ({ cwd, title, model }) => {
       const sessionId = `feishu-${randomUUID()}`;
-      const handle = await ctx.agents.create({ sessionId: toSessionId(sessionId), meta: { cwd } });
+      // 模型是**必填**的：dsh 的 agent 没有模型时，第一次模型请求会抛
+      // `has no provider/model: set AgentOptions.provider and AgentOptions.model
+      // or supply both via the agent/request waterfall`——那时会话已经建好了，
+      // 用户看到的是一个永远跑不动的会话。所以路由解析必须发生在建会话**之前**
+      // （见 `src/dsh/model.ts`），这里只是把它交出去。
+      const handle = await ctx.agents.create({
+        sessionId: toSessionId(sessionId),
+        meta: { cwd },
+        agentOptions: agentOptionsOf(model),
+      });
       // 标题失败绝不能让投递失败（M3a 的教训）。
       try {
         renameTitle?.(handle.agent.session, title);
       } catch (error) {
         log.debug("会话改名失败（不影响投递）", { reason: errorMessage(error) });
       }
-      log.info("已为飞书话题新建会话", { sessionId, cwd, title });
+      log.info("已为飞书话题新建会话", {
+        sessionId,
+        cwd,
+        title,
+        provider: model.provider,
+        model: model.model,
+      });
       return sessionId;
     },
 
@@ -90,8 +135,16 @@ export function createDshPort(ctx: Context, log: Logger): DeliveryPort {
       const existing: Agent | undefined = ctx.agents.get(toSessionId(sessionId));
       if (existing) return existing as unknown as AgentLike;
       // dsh 没有 opencode 的 location 回收，但 agent 可能已不在存活注册表里 —— 按需 resume。
-      const handle = await ctx.agents.resume({ resumeSessionId: toSessionId(sessionId) });
-      log.info("已恢复飞书会话的 agent", { sessionId });
+      // resume **必须**重新带模型路由（见 DshPortOptions.resolveAgentOptions 的说明）。
+      const model = options.resolveAgentOptions?.();
+      if (!model) {
+        log.warn("恢复会话时拿不到模型路由；该会话的下一步大概率失败", { sessionId });
+      }
+      const handle = await ctx.agents.resume({
+        resumeSessionId: toSessionId(sessionId),
+        ...(model ? { agentOptions: agentOptionsOf(model) } : {}),
+      });
+      log.info("已恢复飞书会话的 agent", { sessionId, model: model ? `${model.provider}/${model.model}` : undefined });
       return handle.agent as unknown as AgentLike;
     },
   };

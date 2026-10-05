@@ -28,8 +28,22 @@ export interface Config {
   appSecretRef?: string;
   /** 开放平台域名：feishu（默认）或 lark 国际版。 */
   domain?: string;
-  /** 工作目录基线；缺省为宿主进程 cwd。 */
+  /**
+   * 新会话的默认工作目录；**缺省为 `allowedRoots` 的第一项**（默认 `~`）。
+   *
+   * 注意：这里**不会**回落 `process.cwd()`。旧实现那样做会让"宿主进程恰好从哪启动"
+   * 决定会话目录（实测变成了 `/private/tmp`），用户既看不见也改不了。
+   * 最终目录仍须通过 `resolveWorkingDir` 的越界与系统目录校验。
+   */
   cwd?: string;
+  /**
+   * 模型覆盖：只在**本插件**的会话上生效，留空则用 dsh 的默认模型
+   * （`agentDefaultModel.currentSelection()`）。provider 与 model 必须**同时**给出。
+   */
+  provider?: string;
+  model?: string;
+  /** 推理强度覆盖（可选，需所选 provider 支持）。 */
+  reasoningEffort?: string;
   /** 允许使用机器人的 open_id 白名单；空 = 仅首个发消息者绑定的 owner。 */
   allowUsers?: string[];
   /**
@@ -94,6 +108,12 @@ export interface Config {
   cardMaxChars?: number;
   /** 从首条消息生成话题标题的最大字符数，默认 20。 */
   topicTitleMaxChars?: number;
+  /** 会话列表每页行数（上游同名字段），5–20，默认 8。 */
+  sessionPageSize?: number;
+  /** 主聊天流的 AI 意图识别开关（默认开）。关掉就只回管理台提示卡。 */
+  intentRouting?: boolean;
+  /** 意图识别辅助调用超时（ms），1–60s，默认 15s。 */
+  intentTimeoutMs?: number;
 }
 
 export const Config: z<Config> = z.object({
@@ -101,7 +121,10 @@ export const Config: z<Config> = z.object({
   appSecret: z.string().description("飞书 App Secret（永不写入日志）"),
   appSecretRef: z.string().role("credential-ref").description("凭据名，经 ctx.credentials 解析"),
   domain: z.string().default("https://open.feishu.cn").description("开放平台域名"),
-  cwd: z.string().description("工作目录基线，缺省为宿主 cwd"),
+  cwd: z.string().description("新会话默认工作目录；缺省为 allowedRoots 第一项（不回落到进程 cwd）"),
+  provider: z.string().description("模型 provider 覆盖（须与 model 同时给出）"),
+  model: z.string().description("模型 id 覆盖（须与 provider 同时给出）"),
+  reasoningEffort: z.string().description("推理强度覆盖（可选）"),
   allowUsers: z.array(z.string()).default([]).description("open_id 白名单；空 = 仅 owner"),
   groupEnabled: z.boolean().default(false).description("群入口开关（预留；默认关）"),
   permissionGate: z
@@ -141,6 +164,9 @@ export const Config: z<Config> = z.object({
   cardMaxToolBlocks: z.number().min(1).max(200).default(12).description("运行卡工具块上限"),
   cardMaxChars: z.number().min(1_000).max(30_000).default(30_000).description("单卡正文上限（字符）"),
   topicTitleMaxChars: z.number().min(4).max(200).default(20).description("话题标题最大字符数"),
+  sessionPageSize: z.number().min(5).max(20).default(8).description("会话列表每页行数"),
+  intentRouting: z.boolean().default(true).description("主聊天流 AI 意图识别"),
+  intentTimeoutMs: z.number().min(1_000).max(60_000).default(15_000).description("意图识别超时（ms）"),
 });
 
 /** 解析后的运行时配置：默认值已由 schema 补齐，这里只做形状归一化与派生。 */
@@ -149,7 +175,12 @@ export interface ResolvedConfig {
   readonly appSecret: string | undefined;
   readonly appSecretRef: string | undefined;
   readonly domain: string;
+  /** 新会话默认工作目录（已保证非空；不来自 `process.cwd()`）。 */
   readonly cwd: string;
+  /** 模型覆盖；provider/model 必须同时给，否则建会话时响亮失败。 */
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly reasoningEffort: string | undefined;
   readonly allowUsers: readonly string[];
   readonly groupEnabled: boolean;
   readonly permissionGate: PermissionGate;
@@ -177,6 +208,12 @@ export interface ResolvedConfig {
   readonly cardMaxToolBlocks: number;
   readonly cardMaxChars: number;
   readonly topicTitleMaxChars: number;
+  /** 会话列表每页行数。 */
+  readonly sessionPageSize: number;
+  /** 意图识别开关。 */
+  readonly intentRouting: boolean;
+  /** 意图识别超时（ms）。 */
+  readonly intentTimeoutMs: number;
   /** 卡片按钮 token 的签名密钥（appSecret 派生；缺 appSecret 时为空串）。 */
   readonly signSecret: string;
   /** 缺凭据时为 false：插件保持禁用，不连接飞书。 */
@@ -211,19 +248,27 @@ export function resolveConfig(raw: Config = {}): ResolvedConfig {
   const appId = raw.appId?.trim() || undefined;
   const appSecret = raw.appSecret?.trim() || undefined;
   const allowedRoots = cleanList(raw.allowedRoots);
+  // 允许根目录：显式配置优先；否则退回用户主目录。
+  // 显式要一条非空默认值，因为 `resolveWorkingDir` 在 roots 为空时会拒绝建会话
+  // （对齐上游「未配置 allowedRoots 就无法确定默认目录」的语义）。
+  const roots = allowedRoots.length > 0 ? allowedRoots : [homedir()];
 
   return {
     appId,
     appSecret,
     appSecretRef: raw.appSecretRef?.trim() || undefined,
     domain: (raw.domain?.trim() || "https://open.feishu.cn").replace(/\/+$/, ""),
-    cwd: raw.cwd?.trim() || process.cwd(),
+    // 关键：不再回落 `process.cwd()`。默认目录 = allowedRoots 第一项，可预测且可配置。
+    cwd: raw.cwd?.trim() || roots[0]!,
+    provider: raw.provider?.trim() || undefined,
+    model: raw.model?.trim() || undefined,
+    reasoningEffort: raw.reasoningEffort?.trim() || undefined,
     allowUsers: cleanList(raw.allowUsers),
     groupEnabled: raw.groupEnabled === true,
     permissionGate: raw.permissionGate ?? "gate",
     allowTools: raw.allowTools === undefined ? [...DEFAULT_ALLOW_TOOLS] : cleanList(raw.allowTools),
     denyTools: cleanList(raw.denyTools),
-    allowedRoots: allowedRoots.length > 0 ? allowedRoots : [homedir()],
+    allowedRoots: roots,
     busyDelivery: raw.busyDelivery ?? "steer",
     threadRouting: raw.threadRouting !== false,
     staleExecutionMs: raw.staleExecutionMs ?? 300_000,
@@ -244,6 +289,9 @@ export function resolveConfig(raw: Config = {}): ResolvedConfig {
     cardMaxToolBlocks: raw.cardMaxToolBlocks ?? 12,
     cardMaxChars: raw.cardMaxChars ?? 30_000,
     topicTitleMaxChars: raw.topicTitleMaxChars ?? 20,
+    sessionPageSize: raw.sessionPageSize ?? 8,
+    intentRouting: raw.intentRouting !== false,
+    intentTimeoutMs: raw.intentTimeoutMs ?? 15_000,
     signSecret: appSecret ? deriveSignSecret(appSecret) : "",
     enabled: Boolean(appId && (appSecret || raw.appSecretRef)),
   };

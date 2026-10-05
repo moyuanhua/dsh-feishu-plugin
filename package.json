@@ -2,23 +2,28 @@
   "name": "dsh-feishu-plugin",
   "version": "0.1.0",
   "private": false,
-  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, minimal permissions (p2p read + send-as-bot only, no group scopes), in-card approvals and questions, long connection with no public endpoint.",
+  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, long connection with no public endpoint. Minimal permissions: p2p read + send-as-bot only, no group scopes.",
   "type": "module",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek",
     "deepseek-harness",
+    "cordis",
     "feishu",
     "lark",
     "larksuite",
+    "飞书",
+    "飞书机器人",
     "im-bot",
     "chatbot",
-    "cordis",
+    "ai-agent",
+    "coding-agent",
     "approval"
   ],
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -27,7 +32,6 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
-    "./src/*": "./src/*",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
@@ -38,16 +42,19 @@
     "README.md",
     "cordis.patch.yml",
     "lib",
-    "src",
     "locale",
     "icon.svg"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clean": "rm -rf lib"
+    "clean": "rm -rf lib",
+    "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm test"
   },
   "license": "MIT",
   "dependencies": {
@@ -56,14 +63,14 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-storage-domain": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-attachment": "^0.2.0-rc.2"
+    "@deepseek-ai/cordis": ">=4.0.1 <5",
+    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-attachment": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-user-approval": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-user-questions": ">=0.2.0-rc.2 <0.3.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -75,6 +82,7 @@
     "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
     "@deepseek-ai/dsh-user-questions": "0.2.0-rc.2",
     "@types/node": "^22.20.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   },

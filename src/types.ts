@@ -84,6 +84,15 @@ export interface SessionLink {
   readonly model?: ModelRef;
   /** 本会话已放行的工具（审批卡「本会话内允许」）。 */
   readonly allowActions?: readonly string[];
+  /**
+   * 最后一次活动时间（ms）。
+   *
+   * **为什么我们要自己记**：dsh 没有这个字段 —— `SessionHeader` 只有 `createdAt`，
+   * `sessionPersistence.stat()` 也没有 mtime。而会话列表按"最近用过"排序才有意义。
+   * 我们从已经订阅的 `session/event` 里更新时间；从没经飞书驱动过的会话（纯 GUI 建的）
+   * 没有这个值，调用方回退 `createdAt`。
+   */
+  readonly lastActivityAt?: number;
   /** 话题根卡基线内容。 */
   readonly rootCard?: SessionRootCardBase;
 }

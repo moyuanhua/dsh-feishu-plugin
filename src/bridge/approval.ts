@@ -33,6 +33,7 @@ import {
   type SessionGate,
 } from "./permission.js";
 import { presetAskActions, presetGateMode } from "./perm-presets.js";
+import type { OutboundTarget } from "./outbound.js";
 import type { AllowSessionClaims, ReplayGuard, VerifyResult } from "../security/token.js";
 import type { Logger, PermissionPreset, SessionLink } from "../types.js";
 
@@ -48,7 +49,7 @@ export interface ApprovalRequestLike {
 }
 
 export interface ApprovalCardPort {
-  sendCard(chatId: string, card: object): Promise<string>;
+  sendCard(target: OutboundTarget, card: object): Promise<string>;
   patchCard(messageId: string, card: object): Promise<void>;
 }
 
@@ -184,7 +185,11 @@ export class ApprovalBridge {
 
     let messageId: string;
     try {
-      messageId = await this.deps.cardPort.sendCard(link.chatId, buildApprovalCard(input));
+      messageId = await this.deps.cardPort.sendCard(
+        // 审批卡回复会话锚点 → 留在话题内（顶层发会让它掉到主聊天流）。
+        { chatId: link.chatId, ...(link.replyMessageId ? { replyTo: link.replyMessageId } : {}) },
+        buildApprovalCard(input),
+      );
     } catch (error) {
       // 卡片发不出去就不能接管：交回宿主，避免把轮次卡在等一个永远不来的点击上。
       this.deps.log.error("审批卡发送失败，委托宿主处理", { sessionId, action, reason: errorMessage(error) });

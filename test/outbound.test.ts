@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
+  describeTurnEnd,
   extractAssistantText,
   mapSessionEvent,
   mapStreamFrame,
   RunCard,
   type CardPort,
+  type OutboundTarget,
 } from "../src/bridge/outbound.js";
 import type { Logger } from "../src/types.js";
 
@@ -86,7 +88,7 @@ describe("mapSessionEvent（信封结构）", () => {
     expect(mapSessionEvent({ type: "assistant/message", data: {} })).toBeUndefined();
   });
 
-  test("turn/end → 按 reason.kind 映射三态", () => {
+  test("turn/end → 按 reason.kind 映射（reason 必须透传，否则卡片永远看不到原因）", () => {
     expect(mapSessionEvent({ type: "turn/end", data: { reason: { kind: "completed" } } })).toEqual({
       type: "turn-end",
       outcome: "done",
@@ -94,13 +96,19 @@ describe("mapSessionEvent（信封结构）", () => {
     expect(mapSessionEvent({ type: "turn/end", data: { reason: { kind: "aborted" } } })).toEqual({
       type: "turn-end",
       outcome: "stopped",
+      reason: "已中断",
     });
     expect(mapSessionEvent({ type: "turn/end", data: { reason: { kind: "blocked" } } })).toEqual({
       type: "turn-end",
       outcome: "failed",
+      reason: "本轮被策略拦截，未执行",
     });
-    // 缺 reason 时按正常完成处理
-    expect(mapSessionEvent({ type: "turn/end" })).toEqual({ type: "turn-end", outcome: "done" });
+    // 缺 reason 时**不能**按"正常完成"处理（那正是假成功的根因）。
+    expect(mapSessionEvent({ type: "turn/end" })).toEqual({
+      type: "turn-end",
+      outcome: "failed",
+      reason: "轮次结束但未提供原因",
+    });
   });
 
   test("未覆盖的事件类型返回 undefined；平铺形状仍兼容", () => {
@@ -109,23 +117,87 @@ describe("mapSessionEvent（信封结构）", () => {
   });
 });
 
+/**
+ * 缺陷回归：旧 `mapTurnOutcome` 只有 `aborted`/`blocked` 两个分支，
+ * `error` 落进 `default → "done"` —— 模型报错却显示 ✅（线上那张假成功截图）。
+ */
+describe("describeTurnEnd：终态映射必须穷尽且失败可见", () => {
+  test("error → ❌ 并把 LlmFailure 的 message 与 code 透出来", () => {
+    expect(
+      describeTurnEnd({
+        kind: "error",
+        error: { message: 'agent "feishu-x" has no provider/model', code: "NO_ADAPTER" },
+      }),
+    ).toEqual({
+      outcome: "failed",
+      reason: 'agent "feishu-x" has no provider/model（NO_ADAPTER）',
+    });
+  });
+
+  test("error 缺 message 时给出兜底文案，绝不判成功", () => {
+    expect(describeTurnEnd({ kind: "error", error: {} }).outcome).toBe("failed");
+    expect(describeTurnEnd({ kind: "error" })).toEqual({
+      outcome: "failed",
+      reason: "模型请求失败（未提供原因）",
+    });
+  });
+
+  test("aborted → ⏹ 并区分取消原因", () => {
+    expect(describeTurnEnd({ kind: "aborted", reason: { kind: "user" } })).toEqual({
+      outcome: "stopped",
+      reason: "已按你的请求中断",
+    });
+    expect(describeTurnEnd({ kind: "aborted", reason: { kind: "hook", reason: "看门狗超时" } })).toEqual({
+      outcome: "stopped",
+      reason: "已被钩子中断：看门狗超时",
+    });
+    expect(describeTurnEnd({ kind: "aborted", reason: { kind: "parent" } }).outcome).toBe("stopped");
+    expect(describeTurnEnd({ kind: "aborted" }).outcome).toBe("stopped");
+  });
+
+  test("max-tokens → 仍是 done，但必须带截断警告", () => {
+    expect(describeTurnEnd({ kind: "max-tokens" })).toEqual({
+      outcome: "done",
+      reason: "输出达到模型上限，内容可能被截断",
+    });
+  });
+
+  test("interrupted / forked → ⏹", () => {
+    expect(describeTurnEnd({ kind: "interrupted" }).outcome).toBe("stopped");
+    expect(describeTurnEnd({ kind: "forked" }).outcome).toBe("stopped");
+  });
+
+  test("未知分支、缺 reason → 一律判失败（宁可误报失败，也不能把失败显示成 ✅）", () => {
+    expect(describeTurnEnd({ kind: "some-future-kind" })).toEqual({
+      outcome: "failed",
+      reason: "未知的结束原因：some-future-kind",
+    });
+    expect(describeTurnEnd(undefined)).toEqual({
+      outcome: "failed",
+      reason: "轮次结束但未提供原因",
+    });
+  });
+});
+
 interface Harness {
   card: RunCard;
-  sends: Array<{ chatId: string; card: unknown }>;
+  sends: Array<{ target: OutboundTarget; card: unknown }>;
   patches: Array<{ messageId: string; card: unknown }>;
   setNow: (value: number) => void;
   failPatch: (fail: boolean) => void;
 }
 
-function harness(options: { stopToken?: string; throttleMs?: number } = {}): Harness {
-  const sends: Array<{ chatId: string; card: unknown }> = [];
+function harness(
+  options: { stopToken?: string; throttleMs?: number; target?: OutboundTarget } = {},
+): Harness {
+  const sends: Array<{ target: OutboundTarget; card: unknown }> = [];
   const patches: Array<{ messageId: string; card: unknown }> = [];
   let now = 1_000;
   let shouldFail = false;
   let counter = 0;
   const port: CardPort = {
-    sendCard: async (chatId, card) => {
-      sends.push({ chatId, card });
+    sendCard: async (target, card) => {
+      sends.push({ target, card });
       counter += 1;
       return `om_${counter}`;
     },
@@ -135,7 +207,7 @@ function harness(options: { stopToken?: string; throttleMs?: number } = {}): Har
     },
   };
   const card = new RunCard(port, LOG, {
-    chatId: "oc_1",
+    target: options.target ?? { chatId: "oc_1" },
     title: "测试会话",
     ...(options.stopToken ? { stopToken: options.stopToken } : {}),
     throttleMs: options.throttleMs ?? 700,
@@ -169,9 +241,36 @@ describe("RunCard", () => {
     const h = harness({ stopToken: "tok_1" });
     await h.card.start();
     expect(h.sends).toHaveLength(1);
-    expect(h.sends[0]?.chatId).toBe("oc_1");
+    expect(h.sends[0]?.target.chatId).toBe("oc_1");
     expect(h.card.currentMessageId).toBe("om_1");
     expect(stopValueOf(h.sends[0]?.card)).toEqual({ kind: "stop", token: "tok_1" });
+  });
+
+  /**
+   * 缺陷回归（实测踩到）：话题里回复机器人，机器人的运行卡却出现在**主聊天流**。
+   *
+   * 原因：出站一直是顶层 `send`，从来没有调用过 `channel.reply`。飞书的"话题"是
+   * **回复关系**，不是发送目标 —— 不回复触发消息，卡片就落在话题外。
+   * 所以出站目标必须把 `replyTo` 带下去，由通道层换成 `reply`。
+   */
+  test("话题内触发时必须带 replyTo（否则卡片会掉出话题）", async () => {
+    const h = harness({
+      target: { chatId: "oc_1", replyTo: "om_user_msg", threadId: "omt_1" },
+    });
+    await h.card.start();
+
+    expect(h.sends[0]?.target).toEqual({
+      chatId: "oc_1",
+      replyTo: "om_user_msg",
+      threadId: "omt_1",
+    });
+  });
+
+  test("主聊天流触发时不带 replyTo（否则飞书会凭空开一个话题）", async () => {
+    const h = harness({ target: { chatId: "oc_1" } });
+    await h.card.start();
+
+    expect(h.sends[0]?.target.replyTo).toBeUndefined();
   });
 
   test("文本增量按节流 patch；终态立即刷新并去掉按钮", async () => {
@@ -255,7 +354,7 @@ describe("RunCard", () => {
         patches.push(messageId);
       },
     };
-    const card = new RunCard(port, LOG, { chatId: "oc_1", title: "t", throttleMs: 0, now: () => 1 });
+    const card = new RunCard(port, LOG, { target: { chatId: "oc_1" }, title: "t", throttleMs: 0, now: () => 1 });
 
     const starting = card.start(); // 故意不 await：模拟首卡还在路上
     card.handle({ type: "text-delta", text: "早到的事件" });

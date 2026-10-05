@@ -4,29 +4,40 @@
 
 设计目标与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 对齐，但宿主换成 dsh 的 Cordis 插件体系，并坚持**最小权限**：只申请 `im:message.p2p_msg:readonly` + `im:message:send_as_bot` 两个 scope，不申请任何群权限 —— 机器人在平台层面就收不到群消息。
 
-> 状态：**M3b（会话桥 + 运行卡）**。已完成：配置层、token 内核、长连接 supervisor、入站决策、单人 owner 绑定、话题↔会话映射（storageDomain）、会话创建与投递（followup/steer）、**运行卡（流式回显 + 工具块 + 强停按钮）**、`/help` `/status` `/stop`。共 **154 个单测 / 12 个文件全绿**；已在真实 dsh 宿主 + 真实飞书应用上验证过连接、入站决策与投递路径。审批卡/提问卡/附件为 M4。
+> 状态：**架构已重做 + 会话管理面对齐上游**。内部逻辑不再是 opencode 的逐层镜像，而是面向 dsh 原生接缝重新设计
+> —— 见 [docs/REDESIGN.md](docs/REDESIGN.md) 与 [docs/DESIGN-SESSION-MANAGEMENT.md](docs/DESIGN-SESSION-MANAGEMENT.md)。
+> **交互逻辑（话题↔会话、运行卡、审批、提问、命令、菜单、AI 引导建会话、会话列表）对齐上游**。
+>
+> 规模：`src/` 43 个 TS 文件 / 9,315 行；`test/` 38 个文件 / 6,692 行，**602 个单测全绿**，
+> 覆盖率 **97.98% statements**（见 `vitest.config.ts` 的排除说明），`tsc --noEmit` 干净。
+>
+> 真实宿主上已验证：插件加载 → 飞书长连接 → `agentDefaultModel` 接入 → 建会话带模型后跑完整轮
+> （`turn/end = completed`）；`ctx.sessionQuery.listSessions()` 能列出全量会话、`readTitleSnapshots()`
+> 能取到日志折叠标题，且 `searchSessions` 如文档所言失败（`SESSION_QUERY_SEARCH_DISABLED`）
+> —— 这正是"删掉会话清单镜像"的依据。证据见 [docs/REDESIGN.md §6](docs/REDESIGN.md)。
 
-## 为什么单独开一个仓库
+## 设计基准：为什么重做
 
-上游插件是 opencode V2 单宿主插件（`Plugin.define` + `ctx.permission/session/event`）。它的 15,404 行里约 90% 与 opencode 语义绑定：`delivery: steer|queue`、`permission.evaluate` 改写、inbox park 取消、compaction 摘要复用、location 60 分钟回收保活、`/api/plugin` 续期。dsh 的语义（Cordis `ctx.*`、`ctx.agents` 的 `followup/steer/inject`、`approval/request` waterfall、`storageDomain`）与之不同。
+早期路线是"**先把上游测试搬来当规格，再让实现通过**"——逐层搬 `routing` / `delivery` / `session-map` / `commands`。
+它保证了行为等价，但代价是插件内部结构变成了 opencode 内部结构的一份镜像，于是在**两个宿主语义不同的地方必然失真**，
+而且失真不报错：它静默退化成一个看起来能用的错误行为。
 
-因此这里**不做"跨宿主通用内核"抽象**，而是：
+上一轮实测出的 6 个缺陷全部属于这一类（建会话丢模型、目录回落 `process.cwd()`、`error` 被吞成 ✅、
+失败原因丢弃、卡片正文重复标题、`/help` 列未实现命令）。因此现在改为：
+**dsh 已经拥有的一切只能读、不能自己算**，插件只保留「飞书表现层」与「两个模型之间的翻译层」。
 
-1. **搬运宿主无关内核**（协议 / 安全 / 策略，≈5.5k 行，含 11k 行单测）— 逐文件出处见 [NOTICE.md](NOTICE.md)；
-2. **重写宿主层** — 面向 dsh 接缝，而不是兼容两个宿主；
-3. 等本仓库分层稳定后，再把其中真正通用的层抽成独立包，**反向**给 opencode 侧用（先分离、后抽象）。
+完整的所有权划分、终态契约与新分层见 [docs/REDESIGN.md](docs/REDESIGN.md)。
 
-上游 `index.ts`(1801 行) 里约 80% 是"能力探测 + HTTP 兜底 + 多实例防御"，在单一宿主里应当**变短**而不是复用：去掉兜底后装配层预计落到 500–700 行。
+## 历史：逐层搬运上游逻辑（**已废弃的路线**）
 
-## 逐层搬运上游逻辑（进行中）
-
-按"**先把上游测试搬来当规格，再让实现通过**"的方式逐层搬（避免凭理解重写行为）：
+以下表格记录的是旧路线及其完成度，保留作为对照与出处追溯；**新代码不再按它组织**。
+（`src/bridge/` 仍保留了同名模块，但职责已按 [docs/REDESIGN.md §5](docs/REDESIGN.md) 重划。）
 
 | 层 | 上游文件 | 本仓库 | 上游规格测试 | 状态 |
 |---|---|---|---|---|
 | 路由 | `src/feishu/routing.ts` | `src/bridge/routing.ts` | `test/routing.test.ts`（8 用例） | ✅ |
 | 会话映射 | `src/feishu/session-map.ts`（582 行，5 层 key） | `src/bridge/session-map.ts` | `test/session-map.test.ts`（24 用例） | ✅ |
-| 命令矩阵 | `src/feishu/commands.ts`（16 命令 + 双 scope） | `src/bridge/commands.ts` | `test/commands.test.ts`（21 用例） | ✅ |
+| 命令矩阵 | `src/feishu/commands.ts`（16 命令 + 双 scope） | `src/bridge/commands.ts` | `test/commands.test.ts` | ✅ |
 | 投递决策 | `src/feishu/delivery.ts` | `src/bridge/delivery.ts` | `test/delivery.test.ts`（10 用例） | ✅ |
 | 运行卡 | `run-state/run-renderer/cards/card-limits` | 同名（`bridge/`、`feishu/`） | `test/run-*.test.ts`、`cards/card-limits`（79 用例） | ✅ |
 | token / 白名单 / 日志 | `security/token`、`security/allowlist`、`logger` | 同名 | 逐条搬运 | ✅ |
@@ -79,46 +90,77 @@
 
 ## 命令可用性
 
+**`/help` 由 `COMMAND_SPECS`（`src/bridge/commands.ts`）生成**，与真正执行的 switch 是同一张表 ——
+所以它**不可能再列出没实现的命令**（缺陷 6 的修复）。
+
 | 已实现 | 行为 |
 |---|---|
-| `/help` | 按 scope 显示（主聊天流 / 话题内两套文案） |
-| `/new`（= `/form`） | 最小可用：建会话 → 记为当前 → 发"根卡"，**回复根卡**即进入该会话 |
+| `/help` | 按 scope 显示（主聊天流 / 话题内两套文案），只列已实现命令 |
+| `/new`（= `/form`） | 解析**模型 + 工作目录**后建会话 → 记为当前 → 发"根卡"，**回复根卡**即进入该会话 |
 | `/current` | 显示当前/话题会话（标题、id、权限档位、目录） |
 | `/sessions`（= `/ls`） | 列出本聊天的会话（带序号与「← 当前」），提示用 `/use` 切换 |
 | `/use <序号\|前缀>` | 切换当前会话（前缀歧义/未命中给专门提示） |
 | `/perm [档位]` | 查看/设置会话权限档位（直接影响审批门判定） |
-| `/steer <文本>` | 强制插队投递（走同一投递路径，`decideDelivery` 返回 steer） |
+| `/steer <文本>` | 强制插队投递 |
 | `/stop` | 与卡片「强制停止」共用同一恢复例程 |
-| 尚未移植 | `/model`（dsh 模型接缝未接入）、`/cd`（dsh 会话目录创建后不可变更）、`/now`（无 park 队列提升接口）、`/dir` `/cancel` `/resume`（依赖建会话表单与会话列表卡）；都会**明确回报原因**，不假装成功 |
+| 机器人菜单 `new` / `sessions` | 合成为等价命令，走**与文本完全相同**的管线（`application.bot.menu_v6`） |
+| 尚未实现 | `/model` `/cd` `/now` `/dir` `/cancel` `/resume`；敲了会**明确回报原因**，不假装成功，也**不进 `/help`** |
+
+### 建会话的前置条件（不要跳过）
+
+`/new` 与"话题内第一条消息建会话"都会**先解析模型与目录，失败就不建会话**：
+
+- **模型**：插件配置的 `provider`/`model` → dsh 的 `agentDefaultModel.currentSelection()` → 都没有就**拒绝建会话**
+  并回一张可操作的提示卡。绝不创建"注定跑不起来"的会话。
+- **目录**：显式目录 → 配置的 `cwd` → `allowedRoots[0]`，再做越界与系统目录校验。
+  **不再回落 `process.cwd()`**（旧实现会让会话目录取决于宿主从哪启动）。
+
+`resume` 路径会**重新带一遍模型路由**：否则 agent 被回收后，下一条消息会以"没有模型"的状态恢复，重现同一个失败。
 
 ## 架构
 
+分层见 [docs/REDESIGN.md §5](docs/REDESIGN.md)。要点：
+
 ```
 src/
-├─ index.ts             # Cordis 入口：name / inject / Config / apply
-├─ config.ts            # schemastery schema + 解析夹取（永不抛异常；缺凭据只禁用）
-├─ utils/ttl-map.ts     # 惰性过期 TTL Map（去重 / 防重放 / 待批跟踪）
+├─ index.ts             # Cordis 入口：name / inject / Config / apply；装配下面几层
+├─ feishu/              # 飞书表现层：长连接 supervisor、卡片 JSON、卡片硬限、通道封装
+├─ bridge/              # 翻译层（宿主无关、纯逻辑为主）
+│   dirs.ts             #   工作目录策略（越界 / 系统目录 / 默认值）
+│   commands.ts         #   命令表 **单一真源**（/help 由它生成）
+│   menu.ts             #   机器人自定义菜单事件解析
+│   outbound.ts         #   session/event → 运行卡（终态契约见 REDESIGN §3）
+│   …（routing / session-map / submit / approval / questions / attachments / watchdog …）
+├─ dsh/                 # **唯一**接触 @deepseek-ai/dsh-* 的地方
+│   port.ts             #   会话生命周期 + 投递动词（create/resume 都带模型路由）
+│   model.ts            #   模型解析（配置覆盖 → agentDefaultModel → 失败）
+│   storage.ts / source.ts
+├─ config.ts            # schemastery schema + 派生（缺凭据只禁用，非法值加载即失败）
 ├─ security/token.ts    # 卡片按钮自签 token（HMAC + 用途隔离 + TTL + nonce 防重放）
-└─ (M2–M4) feishu/      # 长连接与卡片：@larksuite/channel 封装
-   (M2–M4) bridge/      # 话题↔会话映射、入站投递、流式回显、审批/提问桥
+└─ utils/ttl-map.ts     # 惰性过期 TTL Map
 ```
 
-dsh 接缝（M2 起接入，均已确认存在）：
+**不可协商的约束**：`src/bridge/**` 与 `src/feishu/**` 不 import 任何 `@deepseek-ai/dsh-*`
+**运行时**模块（类型除外），因此核心逻辑可以在没有 dsh 的环境里单测。
+
+dsh 接缝（均已在真实宿主上确认存在）：
 
 | 用途 | 接缝 |
 |---|---|
-| 建会话 / 取回 agent | `ctx.agents.create/resume`、`ctx.sessionController.resolveAgent(sessionId)` |
-| 投递用户消息 | `agent.followup(msg)`（唤醒下一轮）/ `agent.steer(msg)`（插队）/ `agent.inject(msg)`（只进上下文） |
+| 建会话 / 取回 agent | `ctx.agents.create({sessionId, meta:{cwd}, agentOptions})` / `ctx.agents.resume({resumeSessionId, agentOptions})` |
+| **默认模型** | `ctx.agentDefaultModel.currentSelection()` → `{provider, model, reasoningEffort?}` |
+| 投递用户消息 | `agent.followup(msg)`（下一轮）/ `agent.steer(msg)`（插队）/ `agent.inject(msg)`（只进上下文） |
 | 中断 | `agent.cancel({kind:'user'})` |
 | 实时文本 | `ctx.on('agent/assistant-stream')` → `frame.chunk.type === 'text-delta'` |
 | 持久结算 / 工具活动 | `ctx.on('session/event')` → `assistant/message` / `tool/call` / `tool/result` / `turn/end` |
-| 工具审批 | `ctx.on('approval/request', (req, next) => …)` 返回 `allowed-once` / `rejected` / `cancelled`（fail-closed） |
+| 工具审批 | `ctx.on('approval/request', (req, next) => …)` 返回 `allowed-once` / `rejected` / `cancelled` / `unavailable`（fail-closed） |
 | agent 提问 | `ctx.on('user-questions/request', (req, next) => …)` 返回 `{answers:[{id,selected,custom?}]}` |
-| 斜杠命令 | `ctx.commands.register/execute` |
-| 话题映射持久化 | `ctx.storageDomain`（`defineDomain` + `domainTable`） |
-| 凭据 | `ctx.credentials`（`credentialRef` + `describe/set/unset`，永不回读明文） |
+| 机器人菜单 | `channel.onRawEvent('application.bot.menu_v6', …)`（SDK 的 EventMap 没有该事件，走逃生通道） |
+| 话题映射持久化 | `ctx.storageDomain` |
+| 附件 | `ctx.attachments`（`admitPromptContent` / `saveFile`） |
+| 凭据 | `ctx.credentials` |
 
-飞书侧使用官方 `@larksuite/channel`（MIT，飞书维护）：WS 长连接 + 自动重连 + 心跳、事件归一化（message / cardAction / reaction）、**流式打字机卡片**、附件上传下载、扫码设备码注册应用 —— 省掉上游自己实现的约 7k 行飞书管道代码。
+飞书侧使用官方 `@larksuite/channel`（MIT，飞书维护）：WS 长连接 + 自动重连 + 心跳、事件归一化（message / cardAction / reaction）、流式打字机卡片、附件上传下载 —— 省掉上游自己实现的约 7k 行飞书管道代码。
 
 ## 里程碑
 
@@ -190,6 +232,13 @@ DSH_HOME=/tmp/dsh-feishu-dev dsh web --patch /tmp/feishu-dev.patch.yml --no-open
 ## 配置
 
 见 [cordis.patch.yml](cordis.patch.yml)（含逐项注释与默认值）。凭据走 `appId` / `appSecret` 或 `appSecretRef`。
+
+新会话的两个前置条件（**都要能确定，否则拒绝建会话**）：
+
+| 关注点 | 取值顺序 | 拿不到时 |
+|---|---|---|
+| 模型 | 配置 `provider`+`model` → dsh 的 `agentDefaultModel.currentSelection()` | 拒绝建会话 + 可操作提示卡 |
+| 工作目录 | 显式目录 → 配置 `cwd` → `allowedRoots[0]`（**不回落 `process.cwd()`**），再过越界/系统目录校验 | 拒绝建会话 + 说明原因 |
 
 ## 安装（已按生产路径实测）
 

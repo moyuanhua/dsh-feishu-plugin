@@ -11,29 +11,31 @@
  * 复用的纯逻辑全部来自已搬运的上游模块：`matchSession` / `sessionLine` / `useErrorText`（commands.ts）、
  * `isPermissionPreset` / `presetLabel`（perm-presets.ts）。
  */
-import { matchSession, sessionLine, useErrorText, type ParsedCommand } from "./commands.js";
+import { matchSession, useErrorText, type ParsedCommand, type SessionRef } from "./commands.js";
 import { isPermissionPreset, presetLabel } from "./perm-presets.js";
-import type { SessionEntry } from "./session-map.js";
+
 import type { PermissionPreset, SessionLink } from "../types.js";
 
 export type SessionCommandPlan =
   /** 回一张提示卡（问卷/列表/错误）。 */
   | { readonly kind: "notice"; readonly text: string; readonly template: "blue" | "grey" | "green" | "red" | "orange" }
+  /** 会话列表卡（由执行器渲染成卡片，不再是一段文本）。 */
+  | { readonly kind: "session-list" }
   /** 切换当前会话。 */
   | { readonly kind: "set-active"; readonly sessionId: string; readonly note: string }
   /** 设置会话权限档位（影响审批门）。 */
   | { readonly kind: "set-perm"; readonly sessionId: string; readonly perm: PermissionPreset; readonly note: string }
   /** 以「强制插队」投递一段文本（`/steer`）。 */
   | { readonly kind: "steer"; readonly sessionId: string; readonly text: string }
-  /** 该命令尚未移植到 dsh 版（明确回报，不假装成功）。 */
+  /** 该命令尚未实现（明确回报，不假装成功）。 */
   | { readonly kind: "unsupported"; readonly raw: string; readonly reason: string };
 
 export interface SessionCommandInput {
   readonly parsed: ParsedCommand;
   /** 话题内 = thread（话题会话优先），否则主聊天流（当前会话）。 */
   readonly scope: "main" | "thread";
-  /** 该 chat 的会话列表（`SessionMap.listSessions`）。 */
-  readonly sessions: readonly SessionEntry[];
+  /** 会话目录（由 `session-catalog` 排序后的行；`/use` 的序号与前缀匹配都基于它）。 */
+  readonly sessions: readonly SessionRef[];
   readonly activeId?: string;
   /** 话题对应的会话 id（scope=thread 时有值）。 */
   readonly threadSessionId?: string;
@@ -46,15 +48,8 @@ function targetSessionId(input: SessionCommandInput): string | undefined {
   return input.scope === "thread" ? input.threadSessionId : input.activeId;
 }
 
-/** 渲染会话列表（`/sessions`）。序号从 1 开始，供 `/use <序号>` 使用。 */
-export function renderSessionList(sessions: readonly SessionEntry[], activeId?: string): string {
-  if (sessions.length === 0) return "还没有会话。用 `/new [标题]` 建一个。";
-  const lines = sessions.map((entry, index) => sessionLine(entry, index, activeId));
-  return ["**本聊天的会话**", ...lines, "", "`/use <序号|会话id前缀>` 切换当前会话。"].join("\n");
-}
-
 /** 渲染当前会话（`/current`）。 */
-export function renderCurrent(entry: SessionEntry | undefined, link: SessionLink | undefined): string {
+export function renderCurrent(entry: SessionRef | undefined, link: SessionLink | undefined): string {
   if (!entry) return "当前没有会话。用 `/new [标题]` 建一个。";
   const perm = link?.perm ? presetLabel(link.perm) : "（未设置，跟随全局审批门）";
   return [
@@ -78,7 +73,7 @@ export function planSessionCommand(input: SessionCommandInput): SessionCommandPl
       return { kind: "notice", text: renderCurrent(currentEntry(input), input.link), template: "blue" };
 
     case "sessions":
-      return { kind: "notice", text: renderSessionList(input.sessions, input.activeId), template: "blue" };
+      return { kind: "session-list" };
 
     case "use": {
       if (input.scope === "thread") {
@@ -149,7 +144,7 @@ export function planSessionCommand(input: SessionCommandInput): SessionCommandPl
   }
 }
 
-function currentEntry(input: SessionCommandInput): SessionEntry | undefined {
+function currentEntry(input: SessionCommandInput): SessionRef | undefined {
   const id = targetSessionId(input);
   if (!id) return undefined;
   return input.sessions.find((entry) => entry.sessionID === id);

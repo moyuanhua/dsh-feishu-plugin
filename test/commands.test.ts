@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+  COMMAND_SPECS,
   defaultSessionTitle,
   helpText,
   isCommand,
@@ -122,53 +123,65 @@ describe("文案与展示", () => {
     expect(useErrorText("not_found")).toContain("未找到");
   });
 
-  test("helpText 覆盖全部命令", () => {
-    for (const cmd of [
-      "/new",
-      "/form",
-      "/dir",
-      "/model",
-      "/perm",
-      "/cancel",
-      "/sessions",
-      "/use",
-      "/resume",
-      "/current",
-      "/stop",
-      "/help",
-    ]) {
-      expect(helpText()).toContain(cmd);
+  // 缺陷 6 回归：帮助文案必须是**已实现命令**的镜像。
+  // 旧实现是手写清单，列了 /dir /model /resume /now /cancel /cd，
+  // 用户敲下去只会得到一条"尚未移植" —— 帮助卡本身在误导用户。
+  test("helpText 列出全部已实现命令", () => {
+    const text = helpText();
+    for (const spec of COMMAND_SPECS.filter((s) => s.implemented)) {
+      expect(text, `缺少已实现命令 ${spec.name}`).toContain(spec.usage);
     }
+  });
+
+  test("helpText 不列任何未实现的命令（帮助不能误导用户）", () => {
+    const text = helpText();
+    for (const spec of COMMAND_SPECS.filter((s) => !s.implemented)) {
+      expect(text, `不应出现未实现命令 ${spec.name}`).not.toContain(spec.usage);
+    }
+    for (const cmd of ["/dir", "/resume", "/cancel", "/now", "/cd", "/model"]) {
+      expect(text).not.toContain(cmd);
+    }
+    expect(text).toContain("尚未实现");
+  });
+
+  test("规格表本身自洽：每个未实现命令都必须有明确原因", () => {
+    // 规格表里所有名字都必须能被 parseCommand 解析出来（表与别名同步）
+    for (const spec of COMMAND_SPECS) {
+      expect(parseCommand(`/${spec.name}`)?.name, spec.name).toBe(spec.name);
+    }
+    // 至少有一条已实现命令，否则帮助是空的
+    expect(COMMAND_SPECS.some((s) => s.implemented)).toBe(true);
   });
 
   test("helpText(thread) 只列话题内可用命令并提示去主聊天流", () => {
     const text = helpText("thread");
     expect(text).toContain("/current");
     expect(text).toContain("/stop");
-    expect(text).toContain("/model");
     expect(text).toContain("/perm");
-    expect(text).toContain("/cd");
+    expect(text).toContain("/steer");
     expect(text).not.toContain("/new [标题]");
     expect(text).not.toContain("/use <序号");
-    expect(text).not.toContain("`/dir <绝对路径>`");
     expect(text).toContain("主聊天流");
+
+    for (const spec of COMMAND_SPECS.filter((s) => s.implemented && s.inThread)) {
+      expect(text).toContain(spec.usage);
+    }
+    // 主聊天流专属的已实现命令不该出现在话题帮助里
+    for (const spec of COMMAND_SPECS.filter((s) => s.implemented && !s.inThread)) {
+      expect(text).not.toContain(spec.usage);
+    }
   });
 
-  test("话题命令白名单：current/stop/help/model/perm/cd/unknown 允许", () => {
-    expect(isCommandAllowedInThread("current")).toBe(true);
-    expect(isCommandAllowedInThread("stop")).toBe(true);
-    expect(isCommandAllowedInThread("help")).toBe(true);
-    expect(isCommandAllowedInThread("model")).toBe(true);
-    expect(isCommandAllowedInThread("perm")).toBe(true);
-    expect(isCommandAllowedInThread("cd")).toBe(true);
+  test("话题命令白名单由规格表派生", () => {
+    // 话题内可用的（含未实现的：要给"尚未移植"的准确提示，而不是"话题内不支持"）
+    for (const name of ["current", "stop", "help", "perm", "steer", "model", "cd", "now"] as const) {
+      expect(isCommandAllowedInThread(name), `${name} 应放行`).toBe(true);
+    }
     expect(isCommandAllowedInThread("unknown")).toBe(true);
-    expect(isCommandAllowedInThread("new")).toBe(false);
-    expect(isCommandAllowedInThread("sessions")).toBe(false);
-    expect(isCommandAllowedInThread("use")).toBe(false);
-    expect(isCommandAllowedInThread("resume")).toBe(false);
-    expect(isCommandAllowedInThread("dir")).toBe(false);
-    expect(isCommandAllowedInThread("cancel")).toBe(false);
-    expect(isCommandAllowedInThread("form")).toBe(false);
+    // 建会话与会话管理类必须被引导回主聊天流
+    for (const name of ["new", "form", "sessions", "use", "resume", "dir", "cancel"] as const) {
+      expect(isCommandAllowedInThread(name), `${name} 应被禁`).toBe(false);
+    }
   });
 
   test("threadForbiddenText 指向主聊天流", () => {

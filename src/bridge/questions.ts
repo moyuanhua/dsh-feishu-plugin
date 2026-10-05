@@ -34,9 +34,10 @@ import {
   type FormValue,
 } from "./forms.js";
 import type { Logger, SessionLink } from "../types.js";
+import type { OutboundTarget } from "./outbound.js";
 
 export interface QuestionCardPort {
-  sendCard(chatId: string, card: object): Promise<string>;
+  sendCard(target: OutboundTarget, card: object): Promise<string>;
   patchCard(messageId: string, card: object): Promise<void>;
 }
 
@@ -154,7 +155,11 @@ export class QuestionBridge {
 
     let messageId: string;
     try {
-      messageId = await this.deps.cardPort.sendCard(link.chatId, buildFormCard(form, answers));
+      messageId = await this.deps.cardPort.sendCard(
+        // 提问卡同样回复锚点 → 留在话题内。
+        { chatId: link.chatId, ...(link.replyMessageId ? { replyTo: link.replyMessageId } : {}) },
+        buildFormCard(form, answers),
+      );
     } catch (error) {
       this.deps.log.error("提问卡发送失败，交回宿主", {
         sessionId,

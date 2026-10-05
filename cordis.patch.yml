@@ -19,7 +19,16 @@
         appSecret: !!js process.env.FEISHU_APP_SECRET
         # appSecretRef: FEISHU_APP_SECRET
         # domain: https://open.larksuite.com   # 缺省为飞书
-        # cwd: /absolute/workspace             # 缺省为宿主进程 cwd
+
+        # —— 新会话的「模型 + 目录」——
+        # 两者都必须在建会话**之前**确定，否则插件会拒绝建会话并回一张提示卡。
+        # 目录：缺省 = allowedRoots 第一项（默认 ~）。**不会**回落 process.cwd()。
+        # cwd: /absolute/workspace
+        # 模型：留空 = 用 dsh 的默认模型（agentDefaultModel.currentSelection()）。
+        # 想给飞书单独指定模型时 provider 与 model 必须**同时**给出（只写一半会响亮失败）。
+        # provider: opencode-go
+        # model: deepseek-v4.1-flash
+        # reasoningEffort: max
 
         # —— 权限边界（本插件的核心卖点：最小权限）——
         # 默认 false：不申请任何群权限，机器人物理上收不到群消息。

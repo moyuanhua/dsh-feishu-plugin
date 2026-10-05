@@ -1,20 +1,25 @@
 /**
- * 飞书 chat ↔ dsh session 映射（多会话模型 + 话题/root 映射），持久化在宿主存储里。
+ * 飞书绑定关系（**只存 dsh 不拥有的东西**）。
  *
- * **逻辑来源**：opencode-feishu-plugin `src/feishu/session-map.ts`（MIT，Copyright (c) 2026 moyuanhua），
- * 逐行搬运，key 布局与解析容错保持一致：
+ * 旧版是 `opencode-feishu-plugin` 的 `session-map.ts` 逐行搬运（598 行），里面有一半是
+ * **会话清单的镜像**：`feishu:v2:chat:<chatId>:sessions` 抄了一份
+ * `{sessionID, title, updatedAt}` 列表，还要跟宿主对账。
  *
- * - `feishu:v2:chat:<chatId>:sessions` → `{ sessions: Array<{sessionID,title,updatedAt}>, active? }`
- * - `feishu:v2:chat:<chatId>`          → 旧版单值 `{ sessionID, openId }`，**仅向后兼容读取**，
- *                                         读到即迁移到新结构（并删除旧 key）
- * - `feishu:v2:session:<sid>`          → `{ chatId, openId, replyMessageId?, perm?, gateMode?, dir?, model?, allowActions?, rootCard? }`
+ * 那份镜像在 DSH 里是**多余的、而且注定漂移**：会话的权威来源是
+ * `ctx.sessionQuery.listSessions()` / `readTitleSnapshots()`（全量、标题从日志折叠）。
+ * 本模块因此**删掉全部会话清单**，只保留 dsh 没有概念的两类数据：
+ *
+ * 1. **绑定**：哪个飞书话题/根消息 ↔ 哪个 dsh 会话；哪个聊天当前的会话是谁；
+ * 2. **插件自有元数据**：会话级放行工具表、话题根卡基线、最后活动时间。
+ *
+ * 存储布局（键名与旧版一致，保证已有绑定不丢）：
+ * - `feishu:v2:chat:<chatId>:active`   → 当前会话 id（**旧版是 `:sessions` 列表**，只读降级迁移）
+ * - `feishu:v2:session:<sid>`          → `{ chatId, openId, replyMessageId?, perm?, gateMode?, dir?, model?, allowActions?, lastActivityAt?, rootCard? }`
  * - `feishu:v2:thread:<tid>`           → `{ sessionID, chatId, openId, anchorMessageId? }`（话题）
- * - `feishu:v2:root:<rootId>`          → `{ sessionID }`（话题根消息兜底，含"回复卡片进入会话"）
+ * - `feishu:v2:root:<rootId>`          → `{ sessionID }`（回复根卡进入会话）
  * - `feishu:v2:session-thread:<sid>`   → `{ threadId }`（会话 → 最近话题反向索引）
  *
- * 内存缓存用于 `permission.evaluate` 这类热路径的**同步**判定（`hasSession`/`getLink`）。
- * 上游用 `ctx.storage`（KV）；dsh 侧由 `src/dsh/storage.ts` 用 `ctx.storageDomain` 的一张
- * KV 表实现同一个 `StorageLike`，因此本文件不需要知道宿主差异。
+ * 内存缓存供热路径**同步**读取（`hasSession` / `getLink` / `getSessionIdForChat`）。
  */
 import { errorMessage } from "../logger.js";
 import type {
@@ -30,27 +35,16 @@ import type {
 
 export const CHAT_KEY_PREFIX = "feishu:v2:chat:";
 export const SESSION_KEY_PREFIX = "feishu:v2:session:";
-/** 新多会话 key 的后缀：`feishu:v2:chat:<chatId>:sessions`。 */
-export const CHAT_SESSIONS_SUFFIX = ":sessions";
+/** 当前会话：`feishu:v2:chat:<chatId>:active`。 */
+export const ACTIVE_SUFFIX = ":active";
+/** **旧版**多会话清单后缀，只用于一次性降级读取。 */
+export const LEGACY_SESSIONS_SUFFIX = ":sessions";
 /** 话题 → 会话映射：`feishu:v2:thread:<threadId>`。 */
 export const THREAD_KEY_PREFIX = "feishu:v2:thread:";
 /** 话题根消息 → 会话映射：`feishu:v2:root:<rootId>`。 */
 export const ROOT_KEY_PREFIX = "feishu:v2:root:";
 /** 会话 → 最近话题 反向索引：`feishu:v2:session-thread:<sessionID>`。 */
 export const SESSION_THREAD_KEY_PREFIX = "feishu:v2:session-thread:";
-
-/** 单个会话条目（持久化结构；openId 存在 session 索引里，避免重复）。 */
-export interface SessionEntry {
-  readonly sessionID: string;
-  readonly title: string;
-  readonly updatedAt: number;
-}
-
-/** 一个 chat 的多会话记录。 */
-export interface ChatSessionsRecord {
-  sessions: SessionEntry[];
-  active?: string;
-}
 
 interface ChatRecord {
   readonly sessionID: string;
@@ -62,18 +56,10 @@ export interface SessionMapOptions {
   readonly now?: () => number;
 }
 
-/** `addSession` 的可选行为。 */
-export interface AddSessionOptions {
-  /** 是否把新会话设为当前；默认 true。话题内新建会话时传 false，避免抢走主聊天流的当前会话。 */
-  readonly setActive?: boolean;
-}
-
 export class SessionMap {
   private readonly sessionToChat = new Map<string, SessionLink>();
   /** chat → 当前会话 id（内存缓存，供同步读取）。 */
   private readonly chatToActive = new Map<string, string>();
-  /** chat → 多会话记录（内存缓存，热路径/命令共用）。 */
-  private readonly chatCache = new Map<string, ChatSessionsRecord>();
   /** threadId → 会话映射（内存缓存）。 */
   private readonly threadCache = new Map<string, ThreadLink>();
   /** rootId → sessionID（内存缓存）。 */
@@ -90,7 +76,7 @@ export class SessionMap {
     this.now = options.now ?? (() => Date.now());
   }
 
-  /** 同步判定：是否有已知飞书投递目标。热路径用。 */
+  /** 同步判定：是否有已知飞书投递目标（审批 waterfall 的热路径用）。 */
   hasSession(sessionID: string): boolean {
     return this.sessionToChat.has(sessionID);
   }
@@ -99,9 +85,14 @@ export class SessionMap {
     return this.sessionToChat.get(sessionID);
   }
 
-  /** 当前激活会话 id（仅内存缓存；冷启动请用 `getActive`）。 */
+  /** 当前激活会话 id（仅内存缓存；冷启动请用 `getActiveId`）。 */
   getSessionIdForChat(chatId: string): string | undefined {
     return this.chatToActive.get(chatId);
+  }
+
+  /** 最后活动时间（同步，缓存未命中返回 undefined）。 */
+  getActivity(sessionID: string): number | undefined {
+    return this.sessionToChat.get(sessionID)?.lastActivityAt;
   }
 
   /** 冷启动/缓存未命中时从 storage 回填。 */
@@ -116,11 +107,14 @@ export class SessionMap {
   }
 
   /**
-   * 更新会话元数据（perm/gateMode/dir/model/allowActions/rootCard），
+   * 更新会话元数据（perm/gateMode/dir/model/allowActions/lastActivityAt/rootCard），
    * 保留 chatId/openId/replyMessageId。会话不存在返回 false。
    * patch 中值为 `undefined` 表示删除该字段。
    */
-  async setSessionMeta(sessionID: string, patch: Partial<Omit<SessionLink, "chatId" | "openId">>): Promise<boolean> {
+  async setSessionMeta(
+    sessionID: string,
+    patch: Partial<Omit<SessionLink, "chatId" | "openId">>,
+  ): Promise<boolean> {
     const existing = await this.resolveBySession(sessionID);
     if (!existing) return false;
     const next: Record<string, unknown> = { ...existing };
@@ -135,9 +129,68 @@ export class SessionMap {
   }
 
   /**
-   * 绑定话题 → 会话。同时把 `replyMessageId`（锚点消息）写进 session 索引，
-   * 让审批卡等**异步出站**也能用 reply 落在同一话题内。
+   * 记录一次活动。
+   *
+   * 只在**变新**时写盘：`session/event` 是高频流，每个事件都落盘会放大 I/O，
+   * 而列表排序只关心单调递增的最后时间。
    */
+  async touchActivity(sessionID: string, at = this.now()): Promise<void> {
+    const existing = this.sessionToChat.get(sessionID) ?? (await this.resolveBySession(sessionID));
+    if (!existing) return; // 没有绑定 = 不是我们驱动的会话，不值得为它建一条记录
+    if (existing.lastActivityAt !== undefined && existing.lastActivityAt >= at) return;
+    await this.setSessionMeta(sessionID, { lastActivityAt: at });
+  }
+
+  /** 建立/更新「会话 → 飞书投递目标」这条绑定（会话已存在则保留其元数据）。 */
+  async link(chatId: string, sessionID: string, openId: string): Promise<SessionLink> {
+    const existing = await this.resolveBySession(sessionID);
+    if (existing) return existing;
+    const link: SessionLink = { chatId, openId, lastActivityAt: this.now() };
+    this.remember(sessionID, link);
+    await this.safeSet(`${SESSION_KEY_PREFIX}${sessionID}`, serializeSession(link));
+    return link;
+  }
+
+  /** 设置某聊天当前的会话。会话没有绑定关系时拒绝（避免指向一个死会话）。 */
+  async setActive(chatId: string, sessionID: string): Promise<boolean> {
+    const link = await this.resolveBySession(sessionID);
+    if (!link) {
+      this.log.warn("拒绝把未绑定的会话设为当前会话", { chatId, sessionID });
+      return false;
+    }
+    this.chatToActive.set(chatId, sessionID);
+    await this.safeSet(`${CHAT_KEY_PREFIX}${chatId}${ACTIVE_SUFFIX}`, sessionID);
+    return true;
+  }
+
+  /** 当前会话 id（冷启动会从 storage 回填，并迁移旧版的列表结构）。 */
+  async getActiveId(chatId: string): Promise<string | undefined> {
+    const cached = this.chatToActive.get(chatId);
+    if (cached) return cached;
+    const stored = await this.safeGet(`${CHAT_KEY_PREFIX}${chatId}${ACTIVE_SUFFIX}`);
+    const direct = str(stored);
+    if (direct) {
+      this.chatToActive.set(chatId, direct);
+      return direct;
+    }
+    // 旧版把整个会话列表 + active 存在 `:sessions` 下 —— 只迁移 active，不再保留清单。
+    const legacy = await this.safeGet(`${CHAT_KEY_PREFIX}${chatId}${LEGACY_SESSIONS_SUFFIX}`);
+    const migrated = parseLegacyActive(legacy);
+    if (!migrated) return undefined;
+    this.log.info("已把旧版会话清单迁移为单一的当前会话", { chatId, sessionID: migrated });
+    this.chatToActive.set(chatId, migrated);
+    await this.safeSet(`${CHAT_KEY_PREFIX}${chatId}${ACTIVE_SUFFIX}`, migrated);
+    return migrated;
+  }
+
+  /** 会话 → 该会话的飞书投递目标（含 chat/openId/锚点）。 */
+  async resolveByChat(chatId: string): Promise<ChatRecord | undefined> {
+    const sessionID = await this.getActiveId(chatId);
+    if (!sessionID) return undefined;
+    const link = await this.resolveBySession(sessionID);
+    return link ? { sessionID, openId: link.openId } : undefined;
+  }
+
   async bindThread(
     threadId: string,
     sessionID: string,
@@ -145,41 +198,31 @@ export class SessionMap {
     openId: string,
     anchorMessageId?: string,
   ): Promise<void> {
-    if (!threadId || !sessionID) return;
-    const link: ThreadLink = { sessionID, chatId, openId, ...(anchorMessageId ? { anchorMessageId } : {}) };
-    this.threadCache.set(threadId, link);
-    await this.safeSet(`${THREAD_KEY_PREFIX}${threadId}`, serializeThread(link));
-
-    // 反向索引：session → 最近话题（列表卡标记「已绑话题」/「再开话题」用）。
-    this.sessionToThread.set(sessionID, threadId);
-    await this.safeSet(`${SESSION_THREAD_KEY_PREFIX}${sessionID}`, { threadId });
-
-    // 保留已有的会话元数据（perm/gateMode/dir/model/allowActions），只更新 chat/openId/锚点。
-    const existing = this.sessionToChat.get(sessionID) ?? (await this.readSessionLink(sessionID));
-    const sessionLink: SessionLink = {
-      ...existing,
+    const link: ThreadLink = {
+      sessionID,
       chatId,
       openId,
-      ...(anchorMessageId ? { replyMessageId: anchorMessageId } : {}),
+      ...(anchorMessageId ? { anchorMessageId } : {}),
     };
-    this.remember(sessionID, sessionLink);
-    await this.safeSet(`${SESSION_KEY_PREFIX}${sessionID}`, serializeSession(sessionLink));
+    this.threadCache.set(threadId, link);
+    this.sessionToThread.set(sessionID, threadId);
+    await this.safeSet(`${THREAD_KEY_PREFIX}${threadId}`, serializeThread(link));
+    await this.safeSet(`${SESSION_THREAD_KEY_PREFIX}${sessionID}`, { threadId });
   }
 
-  /** 解析话题对应的会话；未命中返回 undefined（冷缓存回填）。 */
   async resolveByThread(threadId: string): Promise<ThreadLink | undefined> {
-    if (!threadId) return undefined;
     const cached = this.threadCache.get(threadId);
     if (cached) return cached;
     const stored = await this.safeGet(`${THREAD_KEY_PREFIX}${threadId}`);
     const link = parseThreadLink(stored);
-    if (link) this.threadCache.set(threadId, link);
+    if (!link) return undefined;
+    this.threadCache.set(threadId, link);
+    this.sessionToThread.set(link.sessionID, threadId);
     return link;
   }
 
-  /** 反向查询：该会话最近绑定的话题 id（列表卡标记「已绑话题」）。冷缓存回填。 */
+  /** 该会话最近绑定的话题 id（会话列表卡上的「💬 已绑话题」用它）。 */
   async threadIdForSession(sessionID: string): Promise<string | undefined> {
-    if (!sessionID) return undefined;
     const cached = this.sessionToThread.get(sessionID);
     if (cached) return cached;
     const stored = await this.safeGet(`${SESSION_THREAD_KEY_PREFIX}${sessionID}`);
@@ -189,218 +232,39 @@ export class SessionMap {
     return threadId;
   }
 
-  /** 绑定话题根消息 → 会话（手动从卡片建话题时用根消息 id 反查）。 */
   async bindRoot(rootId: string, sessionID: string): Promise<void> {
-    if (!rootId || !sessionID) return;
     this.rootCache.set(rootId, sessionID);
     await this.safeSet(`${ROOT_KEY_PREFIX}${rootId}`, { sessionID });
   }
 
-  /** 解析话题根消息对应的会话。 */
   async resolveByRoot(rootId: string): Promise<{ sessionID: string } | undefined> {
-    if (!rootId) return undefined;
     const cached = this.rootCache.get(rootId);
     if (cached) return { sessionID: cached };
     const stored = await this.safeGet(`${ROOT_KEY_PREFIX}${rootId}`);
-    const sessionID = isRecord(stored) && typeof stored.sessionID === "string" ? stored.sessionID : "";
+    const sessionID = isRecord(stored) ? str(stored.sessionID) : "";
     if (!sessionID) return undefined;
     this.rootCache.set(rootId, sessionID);
     return { sessionID };
   }
 
-  /** 解析 chat 的**当前**会话（向后兼容旧调用）。 */
-  async resolveByChat(chatId: string): Promise<ChatRecord | undefined> {
-    const active = await this.getActive(chatId);
-    if (!active) return undefined;
-    const link = await this.resolveBySession(active.sessionID);
-    return { sessionID: active.sessionID, openId: link?.openId ?? "" };
-  }
-
-  /** 列出会话（保持插入顺序，稳定；`/use <序号>` 依赖此顺序）。 */
-  async listSessions(chatId: string): Promise<SessionEntry[]> {
-    const record = await this.loadChat(chatId);
-    return record.sessions.map((s) => ({ ...s }));
-  }
-
-  /** 当前会话；无则 undefined。 */
-  async getActive(chatId: string): Promise<SessionEntry | undefined> {
-    const record = await this.loadChat(chatId);
-    if (!record.active) return undefined;
-    const entry = record.sessions.find((s) => s.sessionID === record.active);
-    return entry ? { ...entry } : undefined;
-  }
-
-  /** 按 id 取会话条目（话题内 `/current` 等需要标题）。 */
-  async getSession(chatId: string, sessionID: string): Promise<SessionEntry | undefined> {
-    const record = await this.loadChat(chatId);
-    const entry = record.sessions.find((s) => s.sessionID === sessionID);
-    return entry ? { ...entry } : undefined;
-  }
-
-  /** 新增会话（已存在则更新标题/时间）并设为当前（可用 options.setActive=false 保留原当前）。 */
-  async addSession(
-    chatId: string,
-    sessionID: string,
-    title: string,
-    openId: string,
-    options: AddSessionOptions = {},
-  ): Promise<void> {
-    const record = await this.loadChat(chatId);
-    const entry: SessionEntry = { sessionID, title, updatedAt: this.now() };
-    const index = record.sessions.findIndex((s) => s.sessionID === sessionID);
-    if (index >= 0) record.sessions[index] = entry;
-    else record.sessions.push(entry);
-    if (options.setActive === false) {
-      // 话题内新建会话不应抢走主聊天流的当前会话；仅在原本没有当前时兜底。
-      if (!record.active) record.active = sessionID;
-    } else {
-      record.active = sessionID;
-    }
-    // 保留已有的会话元数据（replyMessageId/perm/gateMode/dir/model），避免被冲掉。
-    const existing = this.sessionToChat.get(sessionID) ?? (await this.readSessionLink(sessionID));
-    const link: SessionLink = { ...existing, chatId, openId };
-    this.remember(sessionID, link);
-    await this.persist(chatId, record);
-    await this.safeSet(`${SESSION_KEY_PREFIX}${sessionID}`, serializeSession(link));
-  }
-
-  /**
-   * 为**外部来源**的会话（TUI/Web，无飞书映射）补一条会话索引。
-   *
-   * `/ls` 列出全量会话后，用户「进入话题」的会话需要审批投递、跨目录路由（`dir`）
-   * 与失败通知的目标。已存在则只补缺失字段，**不覆盖** perm/gateMode/model 等既有元数据。
-   */
-  async ensureSessionLink(
-    sessionID: string,
-    input: { readonly chatId: string; readonly openId: string; readonly directory?: string },
-  ): Promise<void> {
-    if (!sessionID || !input.chatId) return;
-    const existing = await this.resolveBySession(sessionID);
-    const link: SessionLink = {
-      ...existing,
-      chatId: input.chatId,
-      openId: input.openId,
-      ...(input.directory ? { dir: input.directory } : {}),
-    };
-    this.remember(sessionID, link);
-    await this.safeSet(`${SESSION_KEY_PREFIX}${sessionID}`, serializeSession(link));
-  }
-
-  /** 切换当前会话；会话不属于该 chat 时返回 false。 */
-  async setActive(chatId: string, sessionID: string): Promise<boolean> {
-    const record = await this.loadChat(chatId);
-    if (!record.sessions.some((s) => s.sessionID === sessionID)) return false;
-    record.active = sessionID;
-    await this.persist(chatId, record);
-    if (!this.sessionToChat.has(sessionID)) await this.resolveBySession(sessionID);
-    return true;
-  }
-
-  /** 移除会话；若移除的是当前会话，则回退到剩余列表最后一个。 */
-  async removeSession(chatId: string, sessionID: string): Promise<boolean> {
-    const record = await this.loadChat(chatId);
-    const before = record.sessions.length;
-    record.sessions = record.sessions.filter((s) => s.sessionID !== sessionID);
-    if (record.sessions.length === before) return false;
-    if (record.active === sessionID) {
-      record.active = record.sessions[record.sessions.length - 1]?.sessionID;
-    }
-    this.sessionToChat.delete(sessionID);
-    await this.persist(chatId, record);
-    await this.safeRemove(`${SESSION_KEY_PREFIX}${sessionID}`);
-    return true;
-  }
-
-  /** 重命名会话。 */
-  async renameSession(chatId: string, sessionID: string, title: string): Promise<boolean> {
-    const record = await this.loadChat(chatId);
-    const index = record.sessions.findIndex((s) => s.sessionID === sessionID);
-    if (index < 0) return false;
-    record.sessions[index] = { sessionID, title, updatedAt: this.now() };
-    await this.persist(chatId, record);
-    return true;
-  }
-
-  /** 兼容旧 API：把会话（重新）绑定到 chat 并设为当前。 */
-  async link(chatId: string, sessionID: string, openId: string): Promise<void> {
-    await this.addSession(chatId, sessionID, "", openId);
-  }
-
-  /** 写入 / 清除该会话的话题根卡基础内容。会话不存在返回 false（不凭空造卡）。 */
   async setRootCard(sessionID: string, base: SessionRootCardBase | undefined): Promise<boolean> {
     return this.setSessionMeta(sessionID, { rootCard: base });
   }
 
-  /** 读取该会话的话题根卡基础内容（无则 undefined，状态刷新将跳过）。 */
   async getRootCard(sessionID: string): Promise<SessionRootCardBase | undefined> {
-    const link = await this.resolveBySession(sessionID);
-    return link?.rootCard;
+    return (await this.resolveBySession(sessionID))?.rootCard;
   }
 
   private remember(sessionID: string, link: SessionLink): void {
     this.sessionToChat.set(sessionID, link);
-  }
-
-  /** 只从 storage 读取会话索引（写入缓存并返回）。 */
-  private async readSessionLink(sessionID: string): Promise<SessionLink | undefined> {
-    const stored = await this.safeGet(`${SESSION_KEY_PREFIX}${sessionID}`);
-    const link = parseSessionLink(stored);
-    if (link) this.remember(sessionID, link);
-    return link;
-  }
-
-  private cacheChat(chatId: string, record: ChatSessionsRecord): void {
-    this.chatCache.set(chatId, record);
-    if (record.active) this.chatToActive.set(chatId, record.active);
-    else this.chatToActive.delete(chatId);
-  }
-
-  private async persist(chatId: string, record: ChatSessionsRecord): Promise<void> {
-    this.cacheChat(chatId, record);
-    await this.safeSet(`${CHAT_KEY_PREFIX}${chatId}${CHAT_SESSIONS_SUFFIX}`, serialize(record));
-  }
-
-  /**
-   * 读取 chat 多会话记录，必要时从旧单值 key 迁移。
-   * 记录本身会缓存在内存，避免命令/热路径反复读 storage。
-   */
-  private async loadChat(chatId: string): Promise<ChatSessionsRecord> {
-    const cached = this.chatCache.get(chatId);
-    if (cached) return cached;
-
-    const modern = await this.safeGet(`${CHAT_KEY_PREFIX}${chatId}${CHAT_SESSIONS_SUFFIX}`);
-    const parsed = parseChatSessions(modern);
-    if (parsed) {
-      this.cacheChat(chatId, parsed);
-      return parsed;
-    }
-
-    // 向后兼容：旧版 chat 单值记录 → 迁移成多会话结构。
-    const legacy = await this.safeGet(`${CHAT_KEY_PREFIX}${chatId}`);
-    const legacySessionID = isRecord(legacy) ? str(legacy.sessionID) : "";
-    const legacyOpenId = isRecord(legacy) ? str(legacy.openId) : "";
-    const migrated: ChatSessionsRecord = { sessions: [] };
-
-    if (legacySessionID) {
-      migrated.sessions.push({ sessionID: legacySessionID, title: "", updatedAt: this.now() });
-      migrated.active = legacySessionID;
-      this.remember(legacySessionID, { chatId, openId: legacyOpenId });
-      // 补齐 session 索引，保证权限路由在重启后仍可用。
-      await this.safeSet(`${SESSION_KEY_PREFIX}${legacySessionID}`, { chatId, openId: legacyOpenId });
-      await this.safeSet(`${CHAT_KEY_PREFIX}${chatId}${CHAT_SESSIONS_SUFFIX}`, serialize(migrated));
-      await this.safeRemove(`${CHAT_KEY_PREFIX}${chatId}`);
-      this.log.info("已迁移 chat 单会话记录为多会话结构", { chatId, sessionID: legacySessionID });
-    }
-
-    this.cacheChat(chatId, migrated);
-    return migrated;
+    this.chatToActive.set(link.chatId, this.chatToActive.get(link.chatId) ?? sessionID);
   }
 
   private async safeGet(key: string): Promise<unknown> {
     try {
       return await this.storage.get(key);
-    } catch (err) {
-      this.log.warn("storage.get 失败", { key, error: errorMessage(err) });
+    } catch (error) {
+      this.log.warn("读取绑定关系失败", { key, reason: errorMessage(error) });
       return undefined;
     }
   }
@@ -408,39 +272,18 @@ export class SessionMap {
   private async safeSet(key: string, value: unknown): Promise<void> {
     try {
       await this.storage.set(key, value);
-    } catch (err) {
-      this.log.warn("storage.set 失败", { key, error: errorMessage(err) });
-    }
-  }
-
-  private async safeRemove(key: string): Promise<void> {
-    try {
-      await this.storage.remove(key);
-    } catch (err) {
-      this.log.warn("storage.remove 失败", { key, error: errorMessage(err) });
+    } catch (error) {
+      // 写入失败只影响持久化，不影响本次会话可用性 —— 记为 warn 而不是 error。
+      this.log.warn("写入绑定关系失败", { key, reason: errorMessage(error) });
     }
   }
 }
 
 /* ------------------------------------------------------------------ *
- * 序列化 / 解析（容错：非法记录一律丢弃，绝不抛）
+ * 序列化 / 解析（容错读取：字段缺失或类型不对一律当作没有，不抛）
  * ------------------------------------------------------------------ */
 
-function serialize(record: ChatSessionsRecord): { sessions: SessionEntry[]; active?: string } {
-  return { sessions: record.sessions, ...(record.active ? { active: record.active } : {}) };
-}
-
-function serializeSession(link: SessionLink): {
-  chatId: string;
-  openId: string;
-  replyMessageId?: string;
-  perm?: SessionLink["perm"];
-  gateMode?: SessionLink["gateMode"];
-  dir?: string;
-  model?: SessionLink["model"];
-  allowActions?: readonly string[];
-  rootCard?: SessionRootCardBase;
-} {
+function serializeSession(link: SessionLink): Record<string, unknown> {
   return {
     chatId: link.chatId,
     openId: link.openId,
@@ -450,6 +293,7 @@ function serializeSession(link: SessionLink): {
     ...(link.dir ? { dir: link.dir } : {}),
     ...(link.model ? { model: link.model } : {}),
     ...(link.allowActions && link.allowActions.length > 0 ? { allowActions: [...link.allowActions] } : {}),
+    ...(typeof link.lastActivityAt === "number" ? { lastActivityAt: link.lastActivityAt } : {}),
     ...(link.rootCard ? { rootCard: link.rootCard } : {}),
   };
 }
@@ -466,6 +310,7 @@ function parseSessionLink(value: unknown): SessionLink | undefined {
   const dir = str(value.dir);
   const model = parseModelRef(value.model);
   const allowActions = parseStringArray(value.allowActions);
+  const lastActivityAt = typeof value.lastActivityAt === "number" ? value.lastActivityAt : undefined;
   const rootCard = parseRootCard(value.rootCard);
   return {
     chatId,
@@ -476,11 +321,11 @@ function parseSessionLink(value: unknown): SessionLink | undefined {
     ...(dir ? { dir } : {}),
     ...(model ? { model } : {}),
     ...(allowActions.length > 0 ? { allowActions } : {}),
+    ...(lastActivityAt !== undefined ? { lastActivityAt } : {}),
     ...(rootCard ? { rootCard } : {}),
   };
 }
 
-/** 解析 `SessionLink.rootCard`（话题根卡基础内容）；非法返回 undefined（状态刷新将跳过）。 */
 function parseRootCard(value: unknown): SessionRootCardBase | undefined {
   if (!isRecord(value)) return undefined;
   const style = value.style === "created" || value.style === "resumed" ? value.style : undefined;
@@ -494,8 +339,7 @@ function parseRootCard(value: unknown): SessionRootCardBase | undefined {
   const summaryLabel = str(value.summaryLabel);
   const compactError = str(value.compactError);
   const note = str(value.note);
-  const updatedAt =
-    typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : undefined;
+  const updatedAt = typeof value.updatedAt === "number" ? value.updatedAt : undefined;
   return {
     style,
     sessionID,
@@ -503,29 +347,28 @@ function parseRootCard(value: unknown): SessionRootCardBase | undefined {
     ...(dir ? { dir } : {}),
     ...(model ? { model } : {}),
     ...(perm ? { perm } : {}),
-    ...(updatedAt ? { updatedAt } : {}),
     ...(summary ? { summary } : {}),
     ...(summaryLabel ? { summaryLabel } : {}),
-    ...(value.summaryPending === true ? { summaryPending: true } : {}),
-    ...(value.compactPending === true ? { compactPending: true } : {}),
     ...(compactError ? { compactError } : {}),
-    ...(value.compactButton === true ? { compactButton: true } : {}),
     ...(note ? { note } : {}),
-    ...(value.openedTopic === true ? { openedTopic: true } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    ...(value.summaryPending === true ? { summaryPending: true as const } : {}),
+    ...(value.compactPending === true ? { compactPending: true as const } : {}),
+    ...(value.compactButton === true ? { compactButton: true as const } : {}),
+    ...(value.openedTopic === true ? { openedTopic: true as const } : {}),
   };
 }
 
-/** 解析字符串数组（去空、去重）；非法返回 []。 */
 function parseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
   const seen = new Set<string>();
   for (const item of value) {
-    if (typeof item !== "string") continue;
-    const trimmed = item.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
+    const text = str(item);
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      out.push(text);
+    }
   }
   return out;
 }
@@ -543,12 +386,7 @@ function parseModelRef(value: unknown): ModelRef | undefined {
   return { providerID, id, ...(name ? { name } : {}) };
 }
 
-function serializeThread(link: ThreadLink): {
-  sessionID: string;
-  chatId: string;
-  openId: string;
-  anchorMessageId?: string;
-} {
+function serializeThread(link: ThreadLink): Record<string, unknown> {
   return {
     sessionID: link.sessionID,
     chatId: link.chatId,
@@ -557,7 +395,6 @@ function serializeThread(link: ThreadLink): {
   };
 }
 
-/** 解析 thread 映射；缺 sessionID 视为非法。 */
 function parseThreadLink(value: unknown): ThreadLink | undefined {
   if (!isRecord(value)) return undefined;
   const sessionID = str(value.sessionID);
@@ -568,22 +405,20 @@ function parseThreadLink(value: unknown): ThreadLink | undefined {
   return { sessionID, chatId, openId, ...(anchorMessageId ? { anchorMessageId } : {}) };
 }
 
-/** 解析新结构；格式非法返回 undefined（调用方回退到旧结构）。 */
-function parseChatSessions(value: unknown): ChatSessionsRecord | undefined {
+/**
+ * 旧版 `:sessions` 结构里取出 `active`。
+ *
+ * 只认 `active`，**不迁移清单** —— 清单本来就是我们要删掉的镜像。
+ * `active` 悬空（不在列表里）时退回列表最后一项，与旧版 `parseChatSessions` 行为一致。
+ */
+function parseLegacyActive(value: unknown): string | undefined {
   if (!isRecord(value) || !Array.isArray(value.sessions)) return undefined;
-  const sessions: SessionEntry[] = [];
-  const seen = new Set<string>();
-  for (const raw of value.sessions) {
-    if (!isRecord(raw)) continue;
-    const sessionID = str(raw.sessionID);
-    if (!sessionID || seen.has(sessionID)) continue;
-    seen.add(sessionID);
-    const updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0;
-    sessions.push({ sessionID, title: str(raw.title), updatedAt });
-  }
-  const activeRaw = typeof value.active === "string" ? value.active : "";
-  const active = activeRaw && seen.has(activeRaw) ? activeRaw : sessions[sessions.length - 1]?.sessionID;
-  return { sessions, ...(active ? { active } : {}) };
+  const ids = value.sessions
+    .map((item) => (isRecord(item) ? str(item.sessionID) : ""))
+    .filter((id): id is string => Boolean(id));
+  const active = str(value.active);
+  if (active && ids.includes(active)) return active;
+  return ids[ids.length - 1];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -591,8 +426,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
-/** 供宿主适配层判断某 key 属于哪一层（诊断/迁移用）。 */
-export type SessionMapGateMode = SessionGateMode;
+export type { ChatRecord };

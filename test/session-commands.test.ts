@@ -6,12 +6,16 @@
  */
 import { describe, expect, test } from "vitest";
 import { parseCommand } from "../src/bridge/commands.js";
-import { planSessionCommand, renderCurrent, renderSessionList } from "../src/bridge/session-commands.js";
-import type { SessionEntry } from "../src/bridge/session-map.js";
+import { planSessionCommand, renderCurrent } from "../src/bridge/session-commands.js";
+import type { SessionRef } from "../src/bridge/commands.js";
 
-const ENTRIES: SessionEntry[] = [
-  { sessionID: "ses_aaa111", title: "一", updatedAt: 1 },
-  { sessionID: "ses_bbb222", title: "", updatedAt: 2 },
+/**
+ * 会话引用（S1 起 `/use` 的序号/前缀匹配基于"会话目录"产出的行，
+ * 不再是本插件镜像的清单条目）。
+ */
+const ENTRIES: SessionRef[] = [
+  { sessionID: "ses_aaa111", title: "一" },
+  { sessionID: "ses_bbb222", title: "" },
 ];
 
 function plan(text: string, over: Partial<Parameters<typeof planSessionCommand>[0]> = {}) {
@@ -27,14 +31,6 @@ function plan(text: string, over: Partial<Parameters<typeof planSessionCommand>[
 }
 
 describe("渲染", () => {
-  test("renderSessionList：编号 + 当前标记 + /use 提示；空列表给建会话引导", () => {
-    const text = renderSessionList(ENTRIES, "ses_aaa111");
-    expect(text).toContain("1. 一");
-    expect(text).toContain("← 当前");
-    expect(text).toContain("/use <序号|会话id前缀>");
-    expect(renderSessionList([], undefined)).toContain("/new");
-  });
-
   test("renderCurrent：标题/会话 id/档位/目录；无会话给引导", () => {
     const text = renderCurrent(ENTRIES[1], { chatId: "oc_1", openId: "ou_1", perm: "askHigh", dir: "/work" });
     expect(text).toContain("(未命名)");
@@ -51,9 +47,11 @@ describe("planSessionCommand", () => {
     expect((plan("/current") as { text: string }).text).toContain("ses_aaa111");
   });
 
-  test("/sessions → 蓝色列表卡", () => {
-    expect(plan("/sessions")).toMatchObject({ kind: "notice", template: "blue" });
-    expect((plan("/ls") as { text: string }).text).toContain("ses_bbb222");
+  test("/sessions → 会话列表卡（执行器渲染成卡片，不再是文本）", () => {
+    expect(plan("/sessions")).toEqual({ kind: "session-list" });
+    expect(plan("/ls")).toEqual({ kind: "session-list" });
+    // 说明：话题内禁用由 `isCommandAllowedInThread` 在命令分发处先行拦截
+    //（见 commands.test.ts），规划器不再重复这一层判断。
   });
 
   test("/use 序号 命中 → set-active；未知 → 橙色提示", () => {

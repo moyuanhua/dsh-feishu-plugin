@@ -83,7 +83,14 @@ export class TtlMap<V> {
     this.data.clear();
   }
 
+  /**
+   * 未过期条目数。
+   *
+   * 与 `entries()` 用同一套语义（顺便惰性清理）—— 旧实现直接返回底层 Map 的大小，
+   * 会把已过期的项算进去，于是"看 size 以为没泄漏"与"get 拿不到"互相矛盾。
+   * 这些都是小表，O(n) 可接受。
+   */
   get size(): number {
-    return this.data.size;
+    return this.entries().length;
   }
 }

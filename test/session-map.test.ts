@@ -1,399 +1,357 @@
 /**
- * 会话映射规格。
+ * 绑定层规格（S1「删镜像」后的新契约）。
  *
- * **规格来源**：opencode-feishu-plugin `test/session-map.test.ts`（MIT，Copyright (c) 2026 moyuanhua），
- * 逐条搬运（仅改 import 路径、并用本地 FakeStorage）。这是"复制逻辑"的执行规格。
+ * 旧版这里测的是"会话清单镜像"（`listSessions` / `addSession` / `removeSession` …）。
+ * 那些**已经删掉**：会话的权威来源是 `ctx.sessionQuery`，我们只存 dsh 不拥有的东西 ——
+ * 绑定关系、插件自有元数据、最后活动时间。
+ *
+ * 因此本文件覆盖三件事：
+ * 1. 绑定的读写与冷启动回填；
+ * 2. **不再有会话清单**（显式断言不写 `:sessions`）；
+ * 3. 旧版 `:sessions` 的**一次性降级迁移**（只取 active，不保留清单）。
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
+  ACTIVE_SUFFIX,
   CHAT_KEY_PREFIX,
-  CHAT_SESSIONS_SUFFIX,
-  ROOT_KEY_PREFIX,
+  LEGACY_SESSIONS_SUFFIX,
   SESSION_KEY_PREFIX,
-  SESSION_THREAD_KEY_PREFIX,
   SessionMap,
   THREAD_KEY_PREFIX,
 } from "../src/bridge/session-map.js";
-import { createLogger } from "../src/logger.js";
-import type { StorageLike } from "../src/types.js";
+import { MemoryStorage, type Logger, type StorageLike } from "../src/types.js";
 
-class FakeStorage implements StorageLike {
-  private readonly data = new Map<string, unknown>();
+const LOG: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
-  seed(key: string, value: unknown): void {
-    this.data.set(key, value);
-  }
-
-  raw(key: string): unknown {
-    return this.data.get(key);
-  }
-
-  get(key: string): unknown {
-    return this.data.get(key);
-  }
-
-  set(key: string, value: unknown): void {
-    this.data.set(key, value);
-  }
-
-  remove(key: string): void {
-    this.data.delete(key);
-  }
+function make(storage: StorageLike = new MemoryStorage(), now = () => 1_000): SessionMap {
+  return new SessionMap(storage, LOG, { now });
 }
 
-const log = createLogger({ level: "error", sink: () => undefined });
-const NOW = 1_700_000_000_000;
-const sessionsKey = (chatId: string) => `${CHAT_KEY_PREFIX}${chatId}${CHAT_SESSIONS_SUFFIX}`;
+/** MemoryStorage 内部是 Map；测试里只关心"写了哪些键"。 */
+function keysOf(storage: MemoryStorage): string[] {
+  return [...(storage as unknown as { data: Map<string, unknown> }).data.keys()];
+}
 
-describe("SessionMap 多会话", () => {
-  test("addSession 双向持久化 + 内存可同步判定", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "标题一", "ou_1");
-
-    expect(map.hasSession("ses_1")).toBe(true);
-    expect(map.getSessionIdForChat("oc_1")).toBe("ses_1");
-    expect(storage.raw(sessionsKey("oc_1"))).toEqual({
-      sessions: [{ sessionID: "ses_1", title: "标题一", updatedAt: NOW }],
-      active: "ses_1",
-    });
-    expect(storage.raw(`${SESSION_KEY_PREFIX}ses_1`)).toEqual({ chatId: "oc_1", openId: "ou_1" });
+describe("绑定：会话 → 飞书投递目标", () => {
+  test("link 之后可同步判定（审批 waterfall 的热路径）", async () => {
+    const map = make();
+    expect(map.hasSession("s1")).toBe(false);
+    await map.link("oc_1", "s1", "ou_1");
+    expect(map.hasSession("s1")).toBe(true);
+    expect(map.getLink("s1")?.chatId).toBe("oc_1");
   });
 
-  test("多会话：listSessions 保持插入顺序，setActive 切换当前", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "一", "ou_1");
-    await map.addSession("oc_1", "ses_2", "二", "ou_1");
-    await map.addSession("oc_1", "ses_3", "三", "ou_1");
-
-    const list = await map.listSessions("oc_1");
-    expect(list.map((s) => s.sessionID)).toEqual(["ses_1", "ses_2", "ses_3"]);
-    expect((await map.getActive("oc_1"))?.sessionID).toBe("ses_3");
-
-    expect(await map.setActive("oc_1", "ses_2")).toBe(true);
-    expect((await map.getActive("oc_1"))?.sessionID).toBe("ses_2");
-    expect(map.getSessionIdForChat("oc_1")).toBe("ses_2");
-    // 非当前会话仍然可被权限路由解析
-    expect(await map.resolveBySession("ses_1")).toEqual({ chatId: "oc_1", openId: "ou_1" });
+  test("link 是幂等的：已存在时保留元数据，不重置 lastActivityAt", async () => {
+    const map = make();
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setSessionMeta("s1", { perm: "trust", lastActivityAt: 500 });
+    await map.link("oc_1", "s1", "ou_1");
+    expect(map.getLink("s1")?.perm).toBe("trust");
+    expect(map.getLink("s1")?.lastActivityAt).toBe(500);
   });
 
-  test("setActive 未知会话返回 false 且不改动 active", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "一", "ou_1");
-
-    expect(await map.setActive("oc_1", "ses_x")).toBe(false);
-    expect((await map.getActive("oc_1"))?.sessionID).toBe("ses_1");
+  test("冷启动回填：新实例从 storage 读回", async () => {
+    const storage = new MemoryStorage();
+    await make(storage).link("oc_1", "s1", "ou_1");
+    const fresh = make(storage);
+    expect(fresh.hasSession("s1")).toBe(false);
+    expect((await fresh.resolveBySession("s1"))?.chatId).toBe("oc_1");
+    expect(fresh.hasSession("s1")).toBe(true);
   });
 
-  test("removeSession：移除当前会话回退到剩余最后一个，并删 session 索引", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "一", "ou_1");
-    await map.addSession("oc_1", "ses_2", "二", "ou_1");
-
-    expect(await map.removeSession("oc_1", "ses_2")).toBe(true);
-    expect((await map.listSessions("oc_1")).map((s) => s.sessionID)).toEqual(["ses_1"]);
-    expect((await map.getActive("oc_1"))?.sessionID).toBe("ses_1");
-    expect(storage.raw(`${SESSION_KEY_PREFIX}ses_2`)).toBeUndefined();
-    expect(await map.removeSession("oc_1", "ses_x")).toBe(false);
-  });
-
-  test("renameSession 更新标题；不存在返回 false", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "旧", "ou_1");
-
-    expect(await map.renameSession("oc_1", "ses_1", "新")).toBe(true);
-    expect((await map.listSessions("oc_1"))[0]?.title).toBe("新");
-    expect(await map.renameSession("oc_1", "ses_x", "新")).toBe(false);
-  });
-
-  test("向后兼容：读到旧单值 key 时迁移成多会话结构", async () => {
-    const storage = new FakeStorage();
-    storage.seed(`${CHAT_KEY_PREFIX}oc_legacy`, { sessionID: "ses_old", openId: "ou_old" });
-    const map = new SessionMap(storage, log, { now: () => NOW });
-
-    const active = await map.getActive("oc_legacy");
-    expect(active?.sessionID).toBe("ses_old");
-    expect(map.getSessionIdForChat("oc_legacy")).toBe("ses_old");
-    expect(map.hasSession("ses_old")).toBe(true);
-    // 新结构已写入，旧 key 已删除
-    expect(storage.raw(sessionsKey("oc_legacy"))).toEqual({
-      sessions: [{ sessionID: "ses_old", title: "", updatedAt: NOW }],
-      active: "ses_old",
-    });
-    expect(storage.raw(`${CHAT_KEY_PREFIX}oc_legacy`)).toBeUndefined();
-    expect(storage.raw(`${SESSION_KEY_PREFIX}ses_old`)).toEqual({ chatId: "oc_legacy", openId: "ou_old" });
-    // 迁移后可正常新增/切换
-    await map.addSession("oc_legacy", "ses_new", "新", "ou_old");
-    expect(await map.setActive("oc_legacy", "ses_old")).toBe(true);
-  });
-
-  test("冷缓存时从 session 索引回填", async () => {
-    const storage = new FakeStorage();
-    storage.seed(`${SESSION_KEY_PREFIX}ses_9`, { chatId: "oc_9", openId: "ou_9" });
-    const map = new SessionMap(storage, log);
-
-    expect(await map.resolveBySession("ses_9")).toEqual({ chatId: "oc_9", openId: "ou_9" });
-    expect(map.hasSession("ses_9")).toBe(true);
-  });
-
-  test("storage 无记录返回 undefined", async () => {
-    const map = new SessionMap(new FakeStorage(), log);
-    expect(await map.resolveBySession("ses_x")).toBeUndefined();
-    expect(await map.resolveByChat("oc_x")).toBeUndefined();
-    expect(await map.getActive("oc_x")).toBeUndefined();
-    expect(await map.listSessions("oc_x")).toEqual([]);
-  });
-
-  test("storage 异常时降级不抛", async () => {
-    const broken: StorageLike = {
-      get: async () => {
-        throw new Error("boom");
-      },
-      set: async () => {
-        throw new Error("boom");
-      },
-      remove: async () => {
-        throw new Error("boom");
-      },
-    };
-    const map = new SessionMap(broken, log);
-    expect(await map.resolveBySession("ses_x")).toBeUndefined();
-    expect(await map.getActive("oc_x")).toBeUndefined();
-    await expect(map.addSession("oc_1", "ses_1", "t", "ou_1")).resolves.toBeUndefined();
-    // 内存仍可用
-    expect(map.hasSession("ses_1")).toBe(true);
+  test("没有记录 / 记录里缺 chatId → undefined", async () => {
+    const storage = new MemoryStorage({ initial: { [`${SESSION_KEY_PREFIX}s1`]: { openId: "ou_1" }  } });
+    expect(await make(storage).resolveBySession("s1")).toBeUndefined();
   });
 });
 
-describe("SessionMap 话题 / root 映射", () => {
-  test("bindThread 持久化 + resolveByThread（含冷缓存回填）", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.bindThread("omt_1", "ses_1", "oc_1", "ou_1", "om_root");
-
-    expect(storage.raw(`${THREAD_KEY_PREFIX}omt_1`)).toEqual({
-      sessionID: "ses_1",
-      chatId: "oc_1",
-      openId: "ou_1",
-      anchorMessageId: "om_root",
-    });
-    expect(await map.resolveByThread("omt_1")).toEqual({
-      sessionID: "ses_1",
-      chatId: "oc_1",
-      openId: "ou_1",
-      anchorMessageId: "om_root",
-    });
-
-    // 冷启动：新实例仅凭 storage 回填。
-    const fresh = new SessionMap(storage, log);
-    expect((await fresh.resolveByThread("omt_1"))?.sessionID).toBe("ses_1");
+describe("绑定：当前会话", () => {
+  test("setActive 之后 getActiveId 能读到", async () => {
+    const map = make();
+    await map.link("oc_1", "s1", "ou_1");
+    expect(await map.setActive("oc_1", "s1")).toBe(true);
+    expect(await map.getActiveId("oc_1")).toBe("s1");
   });
 
-  test("bindThread 同步写 session 索引的 replyMessageId（审批卡落话题）", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-    await map.bindThread("omt_1", "ses_1", "oc_1", "ou_1", "om_root");
-
-    expect(storage.raw(`${SESSION_KEY_PREFIX}ses_1`)).toEqual({
-      chatId: "oc_1",
-      openId: "ou_1",
-      replyMessageId: "om_root",
-    });
-    // 内存缓存同步可见
-    expect(map.getLink("ses_1")?.replyMessageId).toBe("om_root");
-    // addSession 再调用不应冲掉锚点
-    await map.addSession("oc_1", "ses_1", "t2", "ou_1");
-    expect(map.getLink("ses_1")?.replyMessageId).toBe("om_root");
+  test("拒绝把未绑定的会话设为当前（避免指向死会话）", async () => {
+    const map = make();
+    expect(await map.setActive("oc_1", "ghost")).toBe(false);
+    expect(await map.getActiveId("oc_1")).toBeUndefined();
   });
 
-  test("threadIdForSession 反向索引（含再开话题更新）", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.bindThread("omt_1", "ses_1", "oc_1", "ou_1", "om_root");
-    expect(await map.threadIdForSession("ses_1")).toBe("omt_1");
-    expect(storage.raw(`${SESSION_THREAD_KEY_PREFIX}ses_1`)).toEqual({ threadId: "omt_1" });
-    // 冷启动回填
-    expect(await new SessionMap(storage, log).threadIdForSession("ses_1")).toBe("omt_1");
-    // 同一会话再开话题 → 反向索引更新为最近一次
-    await map.bindThread("omt_2", "ses_1", "oc_1", "ou_1");
-    expect(await map.threadIdForSession("ses_1")).toBe("omt_2");
-    // 未绑定返回 undefined
-    expect(await map.threadIdForSession("ses_x")).toBeUndefined();
+  test("冷启动回填当前会话", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setActive("oc_1", "s1");
+    expect(await make(storage).getActiveId("oc_1")).toBe("s1");
   });
 
-  test("bindRoot / resolveByRoot（含冷缓存回填）", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.bindRoot("om_card", "ses_1");
-    expect(storage.raw(`${ROOT_KEY_PREFIX}om_card`)).toEqual({ sessionID: "ses_1" });
-    expect(await map.resolveByRoot("om_card")).toEqual({ sessionID: "ses_1" });
-    expect(await new SessionMap(storage, log).resolveByRoot("om_card")).toEqual({ sessionID: "ses_1" });
-    expect(await map.resolveByRoot("om_unknown")).toBeUndefined();
+  test("resolveByChat 返回当前会话与其 openId", async () => {
+    const map = make();
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setActive("oc_1", "s1");
+    expect(await map.resolveByChat("oc_1")).toEqual({ sessionID: "s1", openId: "ou_1" });
   });
 
-  test("空 id 直接忽略，不写 storage", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log);
-    await map.bindThread("", "ses_1", "oc_1", "ou_1");
-    await map.bindThread("omt_1", "", "oc_1", "ou_1");
-    await map.bindRoot("", "ses_1");
-    expect(await map.resolveByThread("omt_1")).toBeUndefined();
-    expect(await map.resolveByRoot("om_card")).toBeUndefined();
+  test("没有当前会话时 resolveByChat → undefined", async () => {
+    expect(await make().resolveByChat("oc_1")).toBeUndefined();
   });
 
-  test("ThreadLink 缺 sessionID 视为非法", async () => {
-    const storage = new FakeStorage();
-    storage.seed(`${THREAD_KEY_PREFIX}omt_bad`, { chatId: "oc_1", openId: "ou_1" });
-    const map = new SessionMap(storage, log);
-    expect(await map.resolveByThread("omt_bad")).toBeUndefined();
-  });
-
-  test("addSession setActive=false 不抢走当前会话", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "一", "ou_1");
-    await map.addSession("oc_1", "ses_2", "话题", "ou_1", { setActive: false });
-    expect((await map.getActive("oc_1"))?.sessionID).toBe("ses_1");
-    expect((await map.listSessions("oc_1")).map((s) => s.sessionID)).toEqual(["ses_1", "ses_2"]);
-    // 没有任何会话时 setActive=false 仍应落到新会话，避免"无当前"。
-    await map.addSession("oc_2", "ses_3", "首", "ou_1", { setActive: false });
-    expect((await map.getActive("oc_2"))?.sessionID).toBe("ses_3");
+  test("getSessionIdForChat 是同步缓存视图", async () => {
+    const map = make();
+    expect(map.getSessionIdForChat("oc_1")).toBeUndefined();
+    await map.link("oc_1", "s1", "ou_1");
+    expect(map.getSessionIdForChat("oc_1")).toBe("s1");
   });
 });
 
-describe("SessionMap 会话元数据", () => {
-  test("setSessionMeta 持久化 perm/gateMode/dir/model，并保留其它字段", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-    await map.bindThread("omt_1", "ses_1", "oc_1", "ou_1", "om_root");
+describe("不再镜像会话清单（S1 的核心断言）", () => {
+  test("建绑定**不会**写出 `:sessions` 清单键", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setActive("oc_1", "s1");
 
-    expect(await map.setSessionMeta("ses_1", { perm: "edit", gateMode: "gate", dir: "/tmp/a" })).toBe(true);
-    expect(await map.setSessionMeta("ses_1", { model: { providerID: "deepseek", id: "deepseek-chat" } })).toBe(true);
-
-    const link = await map.resolveBySession("ses_1");
-    expect(link).toMatchObject({
-      chatId: "oc_1",
-      openId: "ou_1",
-      replyMessageId: "om_root",
-      perm: "edit",
-      gateMode: "gate",
-      dir: "/tmp/a",
-      model: { providerID: "deepseek", id: "deepseek-chat" },
-    });
-    // 冷启动回填
-    expect((await new SessionMap(storage, log).resolveBySession("ses_1"))?.perm).toBe("edit");
+    expect(keysOf(storage).some((k) => k.endsWith(LEGACY_SESSIONS_SUFFIX))).toBe(false);
+    expect(storage.get(`${CHAT_KEY_PREFIX}oc_1${ACTIVE_SUFFIX}`)).toBe("s1");
   });
 
-  test("addSession / bindThread 不冲掉已有元数据", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-    await map.setSessionMeta("ses_1", { perm: "trust", dir: "/tmp/b" });
-    await map.addSession("oc_1", "ses_1", "t2", "ou_1");
-    await map.bindThread("omt_9", "ses_1", "oc_1", "ou_1", "om_anchor");
-    const link = await map.resolveBySession("ses_1");
-    expect(link).toMatchObject({ perm: "trust", dir: "/tmp/b", replyMessageId: "om_anchor" });
-  });
+  test("会话记录里不再有 title / updatedAt（镜像字段已删）", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setActive("oc_1", "s1");
 
-  test("setSessionMeta 未知会话返回 false", async () => {
-    const map = new SessionMap(new FakeStorage(), log);
-    expect(await map.setSessionMeta("ses_x", { dir: "/tmp" })).toBe(false);
-  });
-
-  test("allowActions 持久化 + 冷启动回填 + 非法值过滤（写入不归一化、读取才归一化）", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-    await map.setSessionMeta("ses_1", { allowActions: ["bash", " edit ", "bash"] });
-
-    // 写入侧原样落盘（上游语义：归一化发生在读取侧；调用方自己保证干净）
-    expect((storage.raw(`${SESSION_KEY_PREFIX}ses_1`) as { allowActions?: string[] }).allowActions).toEqual([
-      "bash",
-      " edit ",
-      "bash",
-    ]);
-    // 冷启动读取：去空白 + 去重
-    expect((await new SessionMap(storage, log).resolveBySession("ses_1"))?.allowActions).toEqual(["bash", "edit"]);
-
-    // 非法值（非数组 / 非字符串项）被过滤成空数组 → 字段被省略
-    storage.seed(`${SESSION_KEY_PREFIX}ses_bad`, { chatId: "oc_1", openId: "ou_1", allowActions: [1, null, "  "] });
-    expect((await new SessionMap(storage, log).resolveBySession("ses_bad"))?.allowActions).toBeUndefined();
-  });
-
-  test("话题根卡 rootCard：持久化 + 冷启动回填 + setRootCard/getRootCard", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-
-    expect(
-      await map.setRootCard("ses_1", {
-        style: "created",
-        sessionID: "ses_1",
-        title: "话题",
-        dir: "/tmp/c",
-        summary: "摘要",
-        updatedAt: NOW,
-      }),
-    ).toBe(true);
-    const base = await map.getRootCard("ses_1");
-    expect(base).toEqual({
-      style: "created",
-      sessionID: "ses_1",
-      title: "话题",
-      dir: "/tmp/c",
-      summary: "摘要",
-      updatedAt: NOW,
-    });
-    // 冷启动回填
-    expect((await new SessionMap(storage, log).getRootCard("ses_1"))?.summary).toBe("摘要");
-
-    // 清除
-    expect(await map.setRootCard("ses_1", undefined)).toBe(true);
-    expect(await map.getRootCard("ses_1")).toBeUndefined();
-
-    // 非法 rootCard（缺 style/sessionID）在解析时被丢弃
-    storage.seed(`${SESSION_KEY_PREFIX}ses_bad2`, { chatId: "oc_1", openId: "ou_1", rootCard: { title: "x" } });
-    expect((await new SessionMap(storage, log).resolveBySession("ses_bad2"))?.rootCard).toBeUndefined();
-
-    // 未知会话不凭空造卡
-    expect(await map.setRootCard("ses_x", { style: "created", sessionID: "ses_x", title: "t" })).toBe(false);
+    const raw = storage.get(`${SESSION_KEY_PREFIX}s1`) as Record<string, unknown>;
+    expect(raw.title).toBeUndefined();
+    expect(raw.updatedAt).toBeUndefined();
+    expect(raw.chatId).toBe("oc_1");
   });
 });
 
-describe("SessionMap.ensureSessionLink（外部会话）", () => {
-  test("无映射的外部会话 → 补建索引（含 dir），且可被权限路由解析", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.ensureSessionLink("ses_ext", { chatId: "oc_1", openId: "ou_1", directory: "/tmp/ext" });
+describe("旧版清单的降级迁移", () => {
+  const legacy = (sessions: string[], active?: string) => ({
+    sessions: sessions.map((id) => ({ sessionID: id, title: id, updatedAt: 1 })),
+    ...(active ? { active } : {}),
+  });
 
-    expect(map.hasSession("ses_ext")).toBe(true);
-    expect(await map.resolveBySession("ses_ext")).toEqual({
+  test("只迁移 active", async () => {
+    const storage = new MemoryStorage({
+      initial: { [`${CHAT_KEY_PREFIX}oc_1${LEGACY_SESSIONS_SUFFIX}`]: legacy(["a", "b"], "b") },
+    });
+    expect(await make(storage).getActiveId("oc_1")).toBe("b");
+  });
+
+  test("active 悬空时退回列表最后一项（与旧版一致）", async () => {
+    const storage = new MemoryStorage({
+      initial: { [`${CHAT_KEY_PREFIX}oc_1${LEGACY_SESSIONS_SUFFIX}`]: legacy(["a", "b"], "gone") },
+    });
+    expect(await make(storage).getActiveId("oc_1")).toBe("b");
+  });
+
+  test("没有 active 字段 → 取最后一项", async () => {
+    const storage = new MemoryStorage({
+      initial: { [`${CHAT_KEY_PREFIX}oc_1${LEGACY_SESSIONS_SUFFIX}`]: legacy(["a", "b"]) },
+    });
+    expect(await make(storage).getActiveId("oc_1")).toBe("b");
+  });
+
+  test("形状不认识 → undefined（不抛）", async () => {
+    for (const bad of [null, 42, {}, { sessions: "no" }, []]) {
+      const storage = new MemoryStorage({ initial: { [`${CHAT_KEY_PREFIX}oc_1${LEGACY_SESSIONS_SUFFIX}`]: bad  } });
+      expect(await make(storage).getActiveId("oc_1"), JSON.stringify(bad)).toBeUndefined();
+    }
+  });
+
+  test("新键存在时优先读新键", async () => {
+    const storage = new MemoryStorage({
+      initial: {
+        [`${CHAT_KEY_PREFIX}oc_1${ACTIVE_SUFFIX}`]: "new",
+        [`${CHAT_KEY_PREFIX}oc_1${LEGACY_SESSIONS_SUFFIX}`]: legacy(["old"], "old"),
+      },
+    });
+    expect(await make(storage).getActiveId("oc_1")).toBe("new");
+  });
+});
+
+describe("话题 / 根卡映射", () => {
+  test("bindThread → resolveByThread，并建立反向索引", async () => {
+    const map = make();
+    await map.bindThread("t1", "s1", "oc_1", "ou_1", "om_anchor");
+    expect(await map.resolveByThread("t1")).toEqual({
+      sessionID: "s1",
       chatId: "oc_1",
       openId: "ou_1",
-      dir: "/tmp/ext",
+      anchorMessageId: "om_anchor",
     });
+    expect(await map.threadIdForSession("s1")).toBe("t1");
   });
 
-  test("已有映射 → 保留 perm/model 等元数据，只补缺失字段", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log, { now: () => NOW });
-    await map.addSession("oc_1", "ses_1", "t", "ou_1");
-    await map.setSessionMeta("ses_1", { perm: "askHigh", dir: "/tmp/keep" });
-    await map.ensureSessionLink("ses_1", { chatId: "oc_1", openId: "ou_1" });
-    expect(await map.resolveBySession("ses_1")).toMatchObject({ perm: "askHigh", dir: "/tmp/keep" });
+  test("冷启动回填话题与反向索引（含 storage 里的键名）", async () => {
+    const storage = new MemoryStorage();
+    await make(storage).bindThread("t1", "s1", "oc_1", "ou_1");
+    expect(keysOf(storage)).toContain(`${THREAD_KEY_PREFIX}t1`);
+    const fresh = make(storage);
+    expect((await fresh.resolveByThread("t1"))?.sessionID).toBe("s1");
+    expect(await fresh.threadIdForSession("s1")).toBe("t1");
   });
 
-  test("缺少 chatId/openId → 不创建", async () => {
-    const storage = new FakeStorage();
-    const map = new SessionMap(storage, log);
-    await map.ensureSessionLink("ses_x", { chatId: "", openId: "ou_1" });
-    await map.ensureSessionLink("", { chatId: "oc_1", openId: "ou_1" });
-    expect(map.hasSession("ses_x")).toBe(false);
+  test("没有锚点时也能绑定", async () => {
+    const map = make();
+    await map.bindThread("t1", "s1", "oc_1", "ou_1");
+    expect((await map.resolveByThread("t1"))?.anchorMessageId).toBeUndefined();
+  });
+
+  test("bindRoot → resolveByRoot（回复根卡进入会话）", async () => {
+    const storage = new MemoryStorage();
+    await make(storage).bindRoot("om_root", "s1");
+    expect(await make(storage).resolveByRoot("om_root")).toEqual({ sessionID: "s1" });
+  });
+
+  test("未绑定的 thread/root → undefined", async () => {
+    const map = make();
+    expect(await map.resolveByThread("nope")).toBeUndefined();
+    expect(await map.resolveByRoot("nope")).toBeUndefined();
+    expect(await map.threadIdForSession("nope")).toBeUndefined();
+  });
+});
+
+describe("会话元数据", () => {
+  test("setSessionMeta 打补丁并保留其它字段；undefined 表示删除", async () => {
+    const map = make();
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setSessionMeta("s1", { perm: "edit", dir: "/a" });
+    await map.setSessionMeta("s1", { dir: undefined, gateMode: "off" });
+
+    const link = map.getLink("s1")!;
+    expect(link.chatId).toBe("oc_1");
+    expect(link.openId).toBe("ou_1");
+    expect(link.perm).toBe("edit");
+    expect(link.gateMode).toBe("off");
+    expect(link.dir).toBeUndefined();
+  });
+
+  test("会话不存在 → false（不凭空造记录）", async () => {
+    expect(await make().setSessionMeta("ghost", { perm: "trust" })).toBe(false);
+  });
+
+  test("allowActions 去重且过滤非法值（读取即归一化）", async () => {
+    const storage = new MemoryStorage({
+      initial: {
+        [`${SESSION_KEY_PREFIX}s1`]: {
+          chatId: "oc_1",
+          openId: "ou_1",
+          allowActions: ["shell", "shell", "", 42, "read"],
+        },
+      },
+    });
+    expect((await make(storage).resolveBySession("s1"))?.allowActions).toEqual(["shell", "read"]);
+  });
+
+  test("非法 perm / 不完整 model / 非法 gateMode 被丢弃", async () => {
+    const storage = new MemoryStorage({
+      initial: {
+        [`${SESSION_KEY_PREFIX}s1`]: {
+          chatId: "oc_1",
+          openId: "ou_1",
+          perm: "god",
+          model: { providerID: "p" },
+          gateMode: "weird",
+        },
+      },
+    });
+    const link = await make(storage).resolveBySession("s1");
+    expect(link?.perm).toBeUndefined();
+    expect(link?.model).toBeUndefined();
+    expect(link?.gateMode).toBeUndefined();
+  });
+
+  test("rootCard 持久化 + 冷启动回填", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.setRootCard("s1", { style: "created", sessionID: "s1", title: "T", dir: "/a" });
+    expect((await make(storage).getRootCard("s1"))?.title).toBe("T");
+  });
+
+  test("形状不对的 rootCard 被丢弃", async () => {
+    const storage = new MemoryStorage({
+      initial: { [`${SESSION_KEY_PREFIX}s1`]: { chatId: "oc_1", openId: "ou_1", rootCard: { style: "weird" } } },
+    });
+    expect(await make(storage).getRootCard("s1")).toBeUndefined();
+  });
+});
+
+describe("最后活动时间（dsh 没有这个字段，我们自己记）", () => {
+  test("touchActivity 记录并单调递增（乱序事件不倒退）", async () => {
+    const map = make();
+    await map.link("oc_1", "s1", "ou_1");
+    await map.touchActivity("s1", 2_000);
+    expect(map.getActivity("s1")).toBe(2_000);
+    await map.touchActivity("s1", 1_000);
+    expect(map.getActivity("s1")).toBe(2_000);
+    await map.touchActivity("s1", 3_000);
+    expect(map.getActivity("s1")).toBe(3_000);
+  });
+
+  test("没有绑定的会话不记活动（不为无关会话建记录）", async () => {
+    const map = make();
+    await map.touchActivity("outsider", 5_000);
+    expect(map.getActivity("outsider")).toBeUndefined();
+  });
+
+  test("未变新时不写盘（高频事件流不放大 IO）", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.touchActivity("s1", 5_000);
+    const setSpy = vi.spyOn(storage, "set");
+    await map.touchActivity("s1", 4_000);
+    await map.touchActivity("s1", 5_000);
+    expect(setSpy).not.toHaveBeenCalled();
+    setSpy.mockRestore();
+  });
+
+  test("冷启动回填", async () => {
+    const storage = new MemoryStorage();
+    const map = make(storage);
+    await map.link("oc_1", "s1", "ou_1");
+    await map.touchActivity("s1", 9_000);
+    expect((await make(storage).resolveBySession("s1"))?.lastActivityAt).toBe(9_000);
+  });
+
+  test("默认时间源用注入的 now", async () => {
+    const map = new SessionMap(new MemoryStorage(), LOG, { now: () => 12_345 });
+    await map.link("oc_1", "s1", "ou_1");
+    await map.touchActivity("s1");
+    expect(map.getActivity("s1")).toBe(12_345);
+  });
+});
+
+describe("存储异常降级（不让宿主错误冒到会话执行）", () => {
+  const broken: StorageLike = {
+    get: () => {
+      throw new Error("boom");
+    },
+    set: () => {
+      throw new Error("boom");
+    },
+    remove: () => {
+      throw new Error("boom");
+    },
+  };
+
+  test("读失败 → undefined，且记 warn", async () => {
+    const warn = vi.fn();
+    const map = new SessionMap(broken, { ...LOG, warn });
+    expect(await map.resolveBySession("s1")).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  test("写失败 → 不抛，内存里仍然可用", async () => {
+    const map = new SessionMap(broken, LOG);
+    await expect(map.link("oc_1", "s1", "ou_1")).resolves.toBeDefined();
+    expect(map.hasSession("s1")).toBe(true);
   });
 });
