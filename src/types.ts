@@ -76,15 +76,8 @@ export interface MessageSource {
   readonly chatId?: string;
   /** 飞书 message id。 */
   readonly messageId?: string;
+  /** 话题 id（群话题场景）。 */
+  readonly threadId?: string;
 }
 
-/** cordis ctx 的最小结构视图：只列本插件真正会用到的成员。 */
-export interface DshContext {
-  logger(name: string): Logger;
-  /** 注册随插件卸载自动清理的资源。 */
-  effect(callback: () => void | (() => void | Promise<void>)): () => void;
-  /** 订阅宿主事件（返回取消订阅函数）。 */
-  on(event: string, listener: (...args: never[]) => unknown): () => void;
-  /** 取宿主服务；缺失时返回 undefined（可选依赖用）。 */
-  get?(name: string): unknown;
-}
+/** cordis 的 ctx 只出现在 `src/dsh/` 适配层；内核模块只用上面的结构类型。 */

@@ -6,54 +6,57 @@
  *
  * 进度：
  * - M1 ✅ 配置 schema + 解析夹取；卡片按钮自签 token 内核（含单测）
- * - M2 ✅ 飞书长连接 supervisor（世代化 + 有界退避 + dispose 收敛）；
- *        入站决策纯函数（单人白名单 / 群开关 / bot 回环 / 空消息 / 命令识别）；
- *        单人 owner 绑定与白名单
- * - M3 ⬜ 话题↔会话映射（ctx.storageDomain）、投递（followup/steer）、流式回显
+ * - M2 ✅ 飞书长连接 supervisor；入站决策纯函数；单人 owner 绑定
+ * - M3a ✅ 话题↔会话映射（`ctx.storageDomain` 领域表）、会话创建、真实投递（followup/steer）
+ * - M3b ⬜ 流式回显卡片、`/new` `/sessions` `/resume` `/stop`
  * - M4 ⬜ 审批卡 / 提问卡 / 强停 / 看门狗 / 附件
  * - M5 ⬜ 扫码 onboarding、locale/icon、peer 区间、发布
  *
+ * cordis 服务访问的两条硬规则（探针实测）：
+ *   1. 必需服务必须写进 `inject`，否则属性访问抛
+ *      `Error: cannot get property "agents" without inject`；
+ *   2. `ctx.get(name)` **不是**服务查找 API（对 agents/tools/llm 一律返回 undefined），
+ *      可选服务要用 `ctx.inject([...], (sub) => ...)` 子级。
+ *
  * 关于"保活"：dsh 没有 opencode 的 location 空闲回收，插件与宿主进程同寿，
- * `ctx.effect` 负责卸载清理；会话不存活时按需 `ctx.sessionController.resolveAgent()` 恢复，
- * 因此上游 340 行 keepalive + 网关选举在 dsh 版中整段删除。
+ * `ctx.effect` 负责卸载清理；会话不存活时按需 `ctx.agents.resume()` 恢复。
  */
+import type { Context } from "@deepseek-ai/cordis";
+import { deliverInbound, type DeliveryPort } from "./bridge/deliver.js";
 import { decideInbound, type InboundMessageLike } from "./bridge/inbound.js";
+import { MemoryTopicStore, openTopicStore, type TopicStore } from "./bridge/topics.js";
 import { Config, resolveConfig, type Config as ConfigShape } from "./config.js";
+import { createDshPort } from "./dsh/port.js";
 import { createFeishuChannel } from "./feishu/channel.js";
 import { ConnectionSupervisor } from "./feishu/connection.js";
-import { createLogger, createLogSink, maskId } from "./logger.js";
+import { createLogger, createLogSink, errorMessage, maskId } from "./logger.js";
 import { OwnerPolicy } from "./security/allowlist.js";
-import { MemoryStorage, type DshContext, type StorageLike } from "./types.js";
+import { MemoryStorage } from "./types.js";
 
 export const name = "feishu";
 
-/**
- * 依赖的宿主服务：桥必须有 `agents` 才能投递消息。
- * 其余服务（storageDomain / sessionController / commands / user-approval / user-questions）
- * 在 M3/M4 用到时再声明，避免在缺服务的 profile 里让整棵插件树加载失败。
- */
-export const inject: readonly string[] = ["agents"];
+/** 必需服务：投递消息要 agents；话题映射要 storageDomain。 */
+export const inject: readonly string[] = ["agents", "storageDomain"];
 
 export { Config, resolveConfig };
 export type { ResolvedConfig } from "./config.js";
 
 /**
- * 取持久化实现。
+ * 一次性打开话题映射表。
  *
- * M2 只支持内存实现：dsh 的持久化接缝是 `ctx.storageDomain`（领域表），
- * 需要先 `defineDomain` 再 `open()`，属于 M3 的「话题↔会话映射」一并落地。
- * 在此之前 owner 绑定不跨重启保留（会告警提示）。
+ * 域表打开失败（后端未配置 / 域版本不符）不致命：降级为内存表并告警 ——
+ * 映射丢失只会导致"下次消息新建一个会话"，不该让整条飞书通道不可用。
  */
-function resolveStorage(ctx: DshContext, warn: (message: string, meta?: Record<string, unknown>) => void): StorageLike {
-  const candidate = ctx.get?.("feishuStorage");
-  if (candidate && typeof candidate === "object" && "get" in candidate && "set" in candidate) {
-    return candidate as StorageLike;
+async function resolveTopicStore(ctx: Context, log: ReturnType<typeof createLogger>): Promise<TopicStore> {
+  try {
+    return await openTopicStore(ctx.storageDomain, log);
+  } catch (error) {
+    log.warn("话题映射域表打开失败，降级为内存表（映射不跨重启）", { reason: errorMessage(error) });
+    return new MemoryTopicStore();
   }
-  warn("未找到持久化接缝，owner 绑定仅存于内存（M3 接入 ctx.storageDomain 后持久化）");
-  return new MemoryStorage();
 }
 
-export function apply(ctx: DshContext, raw: ConfigShape = {}): void {
+export function apply(ctx: Context, raw: ConfigShape = {}): void {
   const config = resolveConfig(raw);
   const sink = createLogSink(typeof config.logFile === "string" ? config.logFile : undefined);
   const log = createLogger({
@@ -67,8 +70,11 @@ export function apply(ctx: DshContext, raw: ConfigShape = {}): void {
     return;
   }
 
-  const storage = resolveStorage(ctx, (message, meta) => log.warn(message, meta));
-  const ownerPolicy = new OwnerPolicy(storage, config.allowUsers);
+  // owner 白名单只需要 key/value 存储；M3b 起接到 storageDomain 的另一张表。
+  const ownerPolicy = new OwnerPolicy(new MemoryStorage(), config.allowUsers);
+  const port: DeliveryPort = createDshPort(ctx, log);
+  let storePromise: Promise<TopicStore> | undefined;
+  const store = (): Promise<TopicStore> => (storePromise ??= resolveTopicStore(ctx, log));
 
   const channel = createFeishuChannel({
     appId: config.appId!,
@@ -92,7 +98,6 @@ export function apply(ctx: DshContext, raw: ConfigShape = {}): void {
   channel.onReconnected(() => supervisor.noteReconnected());
 
   channel.onReject((event) => {
-    // SDK 层策略（群未授权 / 发送者不在白名单 / 未 @ / bot 回环）拒绝投递时的可观测点。
     log.info("入站消息被通道策略拒绝", { reason: event.reason, chatId: maskId(event.chatId) });
   });
 
@@ -101,7 +106,7 @@ export function apply(ctx: DshContext, raw: ConfigShape = {}): void {
     const decision = decideInbound(message as InboundMessageLike, {
       allowed,
       groupEnabled: config.groupEnabled,
-      // M3：改为读 agent.status（不要轮询，用事件维护的投影）。
+      // M3b：改为读 agent 投影状态（不轮询，用事件维护）。
       busy: false,
       busyDelivery: config.busyDelivery,
     });
@@ -111,17 +116,27 @@ export function apply(ctx: DshContext, raw: ConfigShape = {}): void {
       return;
     }
     if (decision.kind === "command") {
-      // M3：交给 ctx.commands.execute(agent, line, [], signal)。
-      log.info("收到命令（M3 接入 ctx.commands 后执行）", { command: decision.text });
+      // M3b：交给 ctx.commands.execute(agent, line, [], signal)。
+      log.info("收到命令（M3b 接入 ctx.commands 后执行）", { command: decision.text });
       return;
     }
-    // M3：按话题↔会话映射解析 sessionId → resolveAgent → applyDelivery(followup/steer)。
-    log.info("收到任务消息（M3 接入会话映射与投递）", {
-      delivery: decision.delivery,
-      attachments: decision.attachmentCount,
-      chars: decision.text.length,
-      sender: maskId(message.senderId),
-    });
+
+    try {
+      const topicStore = await store();
+      const result = await deliverInbound(topicStore, port, message as InboundMessageLike, decision, {
+        cwd: config.cwd,
+      });
+      log.info("已投递到会话", {
+        sessionId: result.sessionId,
+        created: result.created,
+        delivery: decision.delivery,
+        attachments: decision.attachmentCount,
+        chars: decision.text.length,
+        sender: maskId(message.senderId),
+      });
+    } catch (error) {
+      log.error("投递失败", { reason: errorMessage(error), sender: maskId(message.senderId) });
+    }
   });
 
   ctx.effect(() => {
