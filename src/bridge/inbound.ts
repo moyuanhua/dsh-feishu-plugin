@@ -11,7 +11,7 @@
  *     本文件不再重复实现（上游的 dedup.ts 因此不需要移植）；
  *   · 命令分支在 M2 只做识别，执行留给 M3 的 `ctx.commands`。
  */
-import { decideDelivery, type Delivery } from "./delivery.js";
+import type { Delivery } from "./delivery.js";
 import type { AgentLike, HostPort, MessageSource } from "../types.js";
 
 export interface InboundResourceLike {
@@ -43,14 +43,18 @@ export interface InboundMessageLike {
   readonly mentionedBot?: boolean;
 }
 
+/**
+ * 门禁事实。
+ *
+ * 注意**没有** `busy` / `busyDelivery`：上游的入站决策只回答"要不要处理、处理什么"，
+ * 投递方式（steer / queue）在真正投递时才由 `decideDelivery(running, busyDelivery)` 判定
+ * （运行态由 `ExecutionTracker` 用宿主事件维护）。
+ */
 export interface InboundFacts {
   /** OwnerPolicy 的判定结果。 */
   readonly allowed: boolean;
   /** 群入口开关（预留）；false 时群消息一律忽略。 */
   readonly groupEnabled: boolean;
-  /** 该会话当前是否在跑（决定 followup 还是 steer）。 */
-  readonly busy: boolean;
-  readonly busyDelivery: "steer" | "queue";
 }
 
 export type InboundDecision =
@@ -59,8 +63,6 @@ export type InboundDecision =
   | {
       readonly kind: "deliver";
       readonly text: string;
-      /** 上游词表：`steer` 立即插队 / `queue` 排到当前执行之后（判定见 `delivery.ts`）。 */
-      readonly delivery: Delivery;
       readonly attachmentCount: number;
     };
 
@@ -86,9 +88,9 @@ export function decideInbound(message: InboundMessageLike, facts: InboundFacts):
 
   if (/^\/[a-z]/.test(text)) return { kind: "command", text };
 
-  // 投递方式用上游的 decideDelivery 判定（空闲 → steer；忙时按 busyDelivery 偏好），
-  // 不再自己写三元表达式 —— 这是"复制逻辑"的一部分。
-  return { kind: "deliver", text, delivery: decideDelivery(facts.busy, facts.busyDelivery), attachmentCount };
+  // 投递方式**不在这里判定**：上游在真正投递时才调 `decideDelivery(running, busyDelivery)`
+  // （见 `delivery.ts` 与 `deliverToSession`），因此入站决策只回答"是不是要投、投什么"。
+  return { kind: "deliver", text, attachmentCount };
 }
 
 function sourceOf(message: InboundMessageLike): MessageSource {
@@ -97,26 +99,29 @@ function sourceOf(message: InboundMessageLike): MessageSource {
     ...(message.senderId ? { senderId: message.senderId } : {}),
     chatId: message.chatId,
     messageId: message.messageId,
+    ...(message.threadId ? { threadId: message.threadId } : {}),
   };
 }
 
 /**
- * 执行投递决策。
+ * 执行投递：按上游词表映射到 dsh 的调用。
  *
- * `busy` 的判定属于宿主侧（`ExecutionTracker` 由 `src/index.ts` 用 dsh 的
- * `agent/status` 与 `agent/inbox/*` 事件维护），本函数只按上游词表映射到 dsh 的调用：
  * - `steer` → `agent.steer()`：提交到最近 step（空闲则起一轮）；
  * - `queue` → `agent.followup()`：排队到下一轮并唤醒驱动器。
+ *
+ * `delivery` 由调用方用 `decideDelivery(running, busyDelivery)` 判定（上游同序：
+ * 先路由拿会话，再在投递时决定插队/排队）。
  */
 export async function applyDelivery(
   decision: InboundDecision,
   message: InboundMessageLike,
   agent: AgentLike,
   port: HostPort,
+  delivery: Delivery,
 ): Promise<void> {
   if (decision.kind !== "deliver") return;
   const userMessage = port.createUserMessage({ text: decision.text, source: sourceOf(message) });
-  if (decision.delivery === "steer") {
+  if (delivery === "steer") {
     await agent.steer(userMessage);
     return;
   }

@@ -47,6 +47,13 @@ export interface Config {
   allowedRoots?: string[];
   /** 忙时新消息投递：steer 立即插队（默认）或 queue 原生排队。 */
   busyDelivery?: BusyDelivery;
+  /**
+   * 话题路由开关（上游同名配置，默认 true）。
+   *
+   * true：主聊天流只做管理（普通文本不进会话），话题内第一条消息建会话；
+   * false：回退模式 —— 忽略 thread/root，普通文本进"当前活动会话"。
+   */
+  threadRouting?: boolean;
   /** 看门狗阈值（ms）；0 = 关闭看门狗。 */
   staleExecutionMs?: number;
   /** 审批卡 / token 有效期（ms）与卡片 TTL 对齐。 */
@@ -99,6 +106,7 @@ export const Config: z<Config> = z.object({
   denyTools: z.array(z.string()).default([]).description("强制拒绝的工具"),
   allowedRoots: z.array(z.string()).description("允许的工作目录根"),
   busyDelivery: z.union([z.const("steer"), z.const("queue")]).default("steer").description("忙时投递方式"),
+  threadRouting: z.boolean().default(true).description("话题路由开关；false = 普通文本进当前会话"),
   staleExecutionMs: z.number().min(0).max(3_600_000).default(300_000).description("看门狗阈值（ms）；0 = 关闭"),
   approvalTtlMs: z.number().min(30_000).max(86_400_000).default(600_000).description("审批 token 有效期（ms）"),
   stream: z.boolean().default(true).description("流式回填"),
@@ -140,6 +148,8 @@ export interface ResolvedConfig {
   readonly denyTools: readonly string[];
   readonly allowedRoots: readonly string[];
   readonly busyDelivery: BusyDelivery;
+  /** 话题路由开关（true = 上游默认的多话题模型）。 */
+  readonly threadRouting: boolean;
   readonly staleExecutionMs: number;
   readonly approvalTtlMs: number;
   readonly stream: boolean;
@@ -203,6 +213,7 @@ export function resolveConfig(raw: Config = {}): ResolvedConfig {
     denyTools: cleanList(raw.denyTools),
     allowedRoots: allowedRoots.length > 0 ? allowedRoots : [homedir()],
     busyDelivery: raw.busyDelivery ?? "steer",
+    threadRouting: raw.threadRouting !== false,
     staleExecutionMs: raw.staleExecutionMs ?? 300_000,
     approvalTtlMs: raw.approvalTtlMs ?? 600_000,
     stream: raw.stream !== false,

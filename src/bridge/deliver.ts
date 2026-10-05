@@ -1,106 +1,49 @@
 /**
- * 入站消息 → 会话的投递编排。
+ * 投递：把一条消息投进**已由路由解析好的会话**。
  *
- * 拆成两步是**故意的**（上游 opencode 版的 `beginRun` 就是"先发回执卡，再 prompt"，
- * `src/index.ts:1242`）：
+ * **逻辑来源**：opencode-feishu-plugin 的 `runInSession`（`src/index.ts:1242` 附近的
+ * `beginRun` + `promptSession`）：先按会话取回 agent（必要时 resume），
+ * 再用 `decideDelivery(running, busyDelivery)` 决定 `steer`（插队）还是 `queue`（排队），
+ * 最后把用户消息投进去。
  *
- *   prepareDelivery  —— 解析/新建会话，写映射；**不**向会话注入任何东西
- *   （调用方在这里发出运行卡）
- *   sendDelivery     —— 解析 agent 并 followup/steer
- *
- * 为什么必须拆：`followup()` 会立刻唤醒 agent 开始跑，如果先投递再发卡，
- * 这一轮最早的流式事件会在运行卡登记前到达并被丢弃 —— 卡片会永远停在「运行中」。
- * 这是 M3b 首次真实联调踩到的坑（截图上出现了「⏳ 卡住 + ✅ 另一张」两张卡）。
+ * 会话的**归属**由路由层决定（`decideRoute` + `SessionMap`），本文件不做路由，
+ * 因此它只有一件事：投递，并且投递顺序（发卡 → 投递）由调用方掌控。
  */
+import { decideDelivery, type Delivery } from "./delivery.js";
 import { applyDelivery, type InboundDecision, type InboundMessageLike } from "./inbound.js";
-import { topicTitle } from "./commands.js";
-import { topicKey, type TopicRecord, type TopicStore } from "./topics.js";
 import type { HostPort } from "../types.js";
 
 export type DeliverDecision = Extract<InboundDecision, { kind: "deliver" }>;
 
 export interface DeliveryPort extends HostPort {
-  /** 新建一个会话，返回 sessionId。 */
+  /** 新建一个 dsh 会话，返回 sessionId。 */
   createSession(input: { readonly cwd: string; readonly title: string }): Promise<string>;
 }
 
 export interface DeliverOptions {
-  /** 新会话的工作目录（绝对路径）。 */
-  readonly cwd: string;
-  readonly now?: () => number;
-  /** 话题标题最大字符数（来自配置）。 */
-  readonly titleMaxChars?: number;
+  /** 该会话当前是否在跑（由 `ExecutionTracker` 维护）。 */
+  readonly running: boolean;
+  /** 忙时投递偏好（上游 `busyDelivery`）。 */
+  readonly busyDelivery: Delivery;
 }
 
-/** `prepareDelivery` 的产物：会话已就绪，但消息还没投进去。 */
-export interface PreparedDelivery {
-  readonly sessionId: string;
-  /** true = 本次为话题新建了会话（首次消息）。 */
-  readonly created: boolean;
-  readonly title: string;
-  readonly cwd: string;
+/** 投递结果里带上实际使用的投递方式，便于日志与断言。 */
+export interface DeliveryOutcome {
+  readonly delivery: Delivery;
 }
 
-export interface DeliveryResult {
-  readonly sessionId: string;
-  /** true = 本次为话题新建了会话（首次消息）。 */
-  readonly created: boolean;
-}
-
-/** 第一步：解析或新建会话并写入映射（幂等：同一话题复用同一会话）。 */
-export async function prepareDelivery(
-  store: TopicStore,
+export async function deliverToSession(
   port: DeliveryPort,
+  sessionId: string,
   message: InboundMessageLike,
   decision: DeliverDecision,
   options: DeliverOptions,
-): Promise<PreparedDelivery> {
-  const now = options.now ?? (() => Date.now());
-  const key = topicKey(message);
-  const title = topicTitle(decision.text, options.titleMaxChars);
-
-  const existing = store.get(key);
-  if (existing) {
-    await store.put(key, { ...existing, updatedAt: now() });
-    return { sessionId: existing.sessionId, created: false, title: existing.title, cwd: existing.cwd };
-  }
-
-  const sessionId = await port.createSession({ cwd: options.cwd, title });
-  const fresh: TopicRecord = {
-    sessionId,
-    cwd: options.cwd,
-    title,
-    chatId: message.chatId,
-    ...(message.threadId ? { threadId: message.threadId } : {}),
-    updatedAt: now(),
-  };
-  await store.put(key, fresh);
-  return { sessionId, created: true, title, cwd: options.cwd };
-}
-
-/** 第二步：把这条消息投进已就绪的会话（`followup` 或 `steer`）。 */
-export async function sendDelivery(
-  prepared: PreparedDelivery,
-  port: DeliveryPort,
-  message: InboundMessageLike,
-  decision: DeliverDecision,
-): Promise<void> {
-  const agent = await port.resolveAgent(prepared.sessionId);
+): Promise<DeliveryOutcome> {
+  const agent = await port.resolveAgent(sessionId);
   if (!agent) {
-    throw new Error(`会话 ${prepared.sessionId} 无法解析为存活 agent（可能已被 dispose 且不可 resume）`);
+    throw new Error(`会话 ${sessionId} 无法解析为存活 agent（可能已被 dispose 且不可 resume）`);
   }
-  await applyDelivery(decision, message, agent, port);
-}
-
-/** 便捷组合（单测与不需要"先发卡"的调用方用）。 */
-export async function deliverInbound(
-  store: TopicStore,
-  port: DeliveryPort,
-  message: InboundMessageLike,
-  decision: DeliverDecision,
-  options: DeliverOptions,
-): Promise<DeliveryResult> {
-  const prepared = await prepareDelivery(store, port, message, decision, options);
-  await sendDelivery(prepared, port, message, decision);
-  return { sessionId: prepared.sessionId, created: prepared.created };
+  const delivery = decideDelivery(options.running, options.busyDelivery);
+  await applyDelivery(decision, message, agent, port, delivery);
+  return { delivery };
 }

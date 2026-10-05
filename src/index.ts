@@ -4,29 +4,38 @@
  * 形态与 dsh 插件约定一致：导出 `name` / `inject` / `Config` / `apply`，
  * 由 profile 的 `cordis.patch.yml` 里一条 `insert` 条目挂载（见 cordis.patch.yml）。
  *
- * 进度：
- * - M1 ✅ 配置 schema + 卡片 token 内核
- * - M2 ✅ 长连接 supervisor；入站决策；单人 owner 绑定
- * - M3a ✅ 话题↔会话映射（storageDomain）、会话创建、真实投递
- * - M3b ✅ 运行卡（流式回显 + 工具块 + 强停按钮）、`/help` `/status` `/stop`
- * - M4 ⬜ 审批卡 / 提问卡 / 看门狗 / 附件
- * - M5 ⬜ 扫码 onboarding、locale/icon、peer 区间、发布
+ * 进度（逐层搬运上游逻辑，每层先搬上游规格测试）：
+ * - ✅ 配置 schema + 卡片按钮自签 token 内核
+ * - ✅ 长连接 supervisor（世代化 + 有界退避 + dispose 收敛）
+ * - ✅ **路由**（`bridge/routing.ts` ← 上游 routing.ts）
+ * - ✅ **会话映射**（`bridge/session-map.ts` ← 上游 session-map.ts 五层 key + 多会话）
+ * - ✅ **命令矩阵**（`bridge/commands.ts` ← 上游 commands.ts 16 命令 + 双 scope）
+ * - ✅ **投递决策**（`bridge/delivery.ts` ← 上游 delivery.ts：steer/queue + 判活）
+ * - ✅ 运行卡（流式正文 + 工具块 + 强停按钮，先发卡再投递）
+ * - ⬜ 审批卡 / 提问卡 / 看门狗 / 附件 / 建会话表单 / 会话列表卡（后续层）
  *
- * 官方文档核对过的三条硬规则（`docs/user/develop/`）：
- * 1. 必需服务写 `inject` 后属性访问；**可选服务用 `ctx.inject([...], sub => …)`**
- *    —— 实测 `ctx.get('sessionTitle')` 返回 undefined，而属性访问会抛
- *    `cannot get property "x" without inject`（M3a 首次真实投递就栽在这里）。
- * 2. 与宿主共享实例的 dsh 包必须同时出现在 `peerDependencies` 与 `devDependencies`。
- * 3. 卸载清理逆序但异步并发 → 顺序相关的清理放进同一个 `ctx.effect`，并用 `disposed` 标志
- *    防止拆除过程中的事件回调继续访问已停止的通道。
+ * 入站主流程与上游 `src/index.ts:816-918` 的 `handleMessage` 同序：
+ *   p2p 门禁 → owner 白名单 → 空文本 → (threadRouting=false 回退) → 命令优先拦截 →
+ *   路由（thread → root → create-in-thread → main-hint）→ 先发运行卡再投递
+ *
+ * cordis 服务访问的两条硬规则（实测）：必需服务写 `inject` 后属性访问；可选服务用
+ * `ctx.inject([...], sub => …)`（`ctx.get(name)` 对未 inject 的服务返回 undefined）。
  *
  * 关于"保活"：dsh 没有 opencode 的 location 空闲回收，插件与宿主进程同寿，
  * `ctx.effect` 负责卸载清理；会话不存活时按需 `ctx.agents.resume()` 恢复。
  */
 import type { Context } from "@deepseek-ai/cordis";
-import { helpText, isCommandAllowedInThread, parseCommand, threadForbiddenText } from "./bridge/commands.js";
-import { prepareDelivery, sendDelivery, type DeliveryPort } from "./bridge/deliver.js";
-import { decideInbound, type InboundMessageLike } from "./bridge/inbound.js";
+import {
+  defaultSessionTitle,
+  helpText,
+  isCommandAllowedInThread,
+  parseCommand,
+  threadForbiddenText,
+  topicTitle,
+} from "./bridge/commands.js";
+import { deliverToSession, type DeliveryPort } from "./bridge/deliver.js";
+import { ExecutionTracker } from "./bridge/delivery.js";
+import { decideInbound, type InboundDecision, type InboundMessageLike } from "./bridge/inbound.js";
 import {
   mapSessionEvent,
   mapStreamFrame,
@@ -35,11 +44,12 @@ import {
   type CardPort,
   type SessionEventLike,
 } from "./bridge/outbound.js";
-import { commandScope } from "./bridge/routing.js";
+import { commandScope, decideRoute } from "./bridge/routing.js";
 import { isTerminal } from "./bridge/run-state.js";
-import { MemoryTopicStore, openTopicStore, topicKey, type TopicStore } from "./bridge/topics.js";
+import { SessionMap } from "./bridge/session-map.js";
 import { Config, resolveConfig, type Config as ConfigShape } from "./config.js";
 import { createDshPort } from "./dsh/port.js";
+import { openDomainKv } from "./dsh/storage.js";
 import { buildNoticeCard } from "./feishu/cards.js";
 import { createFeishuChannel } from "./feishu/channel.js";
 import { ConnectionSupervisor } from "./feishu/connection.js";
@@ -50,7 +60,7 @@ import { MemoryStorage } from "./types.js";
 
 export const name = "feishu";
 
-/** 必需服务：投递消息要 agents；话题映射要 storageDomain。 */
+/** 必需服务：投递消息要 agents；会话映射要 storageDomain。 */
 export const inject: readonly string[] = ["agents", "storageDomain"];
 
 export { Config, resolveConfig };
@@ -70,7 +80,7 @@ function sessionIdOfAgent(agent: unknown): string | undefined {
   return typeof candidate?.sessionId === "string" ? candidate.sessionId : undefined;
 }
 
-/** 强停按钮的 value 形状（见 `src/feishu/cards.ts` 的 `stop.value`）。 */
+/** 强停按钮的 value 形状（见 `src/feishu/cards.ts`）。 */
 interface StopActionValue {
   readonly kind?: string;
   readonly token?: string;
@@ -80,21 +90,6 @@ function readStopValue(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as StopActionValue;
   return candidate.kind === "stop" && typeof candidate.token === "string" ? candidate.token : undefined;
-}
-
-/**
- * 一次性打开话题映射表。
- *
- * 域表打开失败（后端未配置 / 域版本不符）不致命：降级为内存表并告警 ——
- * 映射丢失只会导致"下次消息新建一个会话"，不该让整条飞书通道不可用。
- */
-async function resolveTopicStore(ctx: Context, log: ReturnType<typeof createLogger>): Promise<TopicStore> {
-  try {
-    return await openTopicStore(ctx.storageDomain, log);
-  } catch (error) {
-    log.warn("话题映射域表打开失败，降级为内存表（映射不跨重启）", { reason: errorMessage(error) });
-    return new MemoryTopicStore();
-  }
 }
 
 export function apply(ctx: Context, raw: ConfigShape = {}): void {
@@ -117,9 +112,26 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
   const ownerPolicy = new OwnerPolicy(new MemoryStorage(), config.allowUsers);
   const port: DeliveryPort = createDshPort(ctx, log);
   const stopGuard = new ReplayGuard(config.approvalTtlMs);
+  /** 执行态跟踪（上游 `ExecutionTracker`）：决定 steer / queue。 */
+  const tracker = new ExecutionTracker();
 
-  let storePromise: Promise<TopicStore> | undefined;
-  const store = (): Promise<TopicStore> => (storePromise ??= resolveTopicStore(ctx, log));
+  /**
+   * 会话映射：懒打开域表（`ctx.storageDomain` 的一张 KV 表承载上游五层 key）。
+   * 打开失败降级为内存 KV，保证通道可用（映射不跨重启）。
+   */
+  let sessionMapPromise: Promise<SessionMap> | undefined;
+  let closeKv: (() => void) | undefined;
+  const sessionMap = (): Promise<SessionMap> =>
+    (sessionMapPromise ??= (async () => {
+      try {
+        const kv = await openDomainKv(ctx.storageDomain, log);
+        closeKv = kv.close;
+        return new SessionMap(kv, log);
+      } catch (error) {
+        log.warn("会话映射域表打开失败，降级为内存表（映射不跨重启）", { reason: errorMessage(error) });
+        return new SessionMap(new MemoryStorage(), log);
+      }
+    })());
 
   const channel = createFeishuChannel({
     appId: config.appId!,
@@ -140,8 +152,6 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
 
   /** sessionId → 运行卡（一个会话同一时刻只挂一张）。 */
   const runCards = new Map<string, RunCard>();
-  /** sessionId → chatId（事件回来时要找到发到哪个 chat）。 */
-  const sessionChats = new Map<string, string>();
   /** sessionId → (callId → 工具名)：`tool/result` 不带 name，必须由 `tool/call` 配对。 */
   const pendingToolNames = new Map<string, Map<string, string>>();
 
@@ -159,12 +169,30 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     },
   });
 
-  async function sendNotice(chatId: string, text: string, template?: "blue" | "grey" | "green" | "red" | "orange") {
+  async function sendNotice(
+    chatId: string,
+    text: string,
+    template?: "blue" | "grey" | "green" | "red" | "orange",
+  ): Promise<void> {
     try {
       await channel.send(chatId, { card: buildNoticeCard({ text, ...(template ? { template } : {}) }) });
     } catch (error) {
       log.warn("提示卡发送失败", { reason: errorMessage(error) });
     }
+  }
+
+  /** 管理台提示卡（上游 `main-hint` 分支：没有 quickNew 时回提示卡，普通文本不进会话）。 */
+  async function sendMainHint(chatId: string): Promise<void> {
+    await sendNotice(
+      chatId,
+      [
+        "**主聊天流 = 管理台**",
+        "普通文本不会进入任何会话；先建会话，再在话题里发指令。",
+        "",
+        helpText("main"),
+      ].join("\n"),
+      "grey",
+    );
   }
 
   /** 结束并登记一张运行卡（终态刷新后从活动表移除）。 */
@@ -180,12 +208,12 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
    * 命令分发（上游 `index.ts:849-852` 的"命令优先拦截"落点）。
    *
    * 顺序与上游一致：解析 → 话题内白名单校验（被禁则引导回主聊天流）→ 按 scope 执行。
-   * 已完整移植的只有 `/help` 与 `/stop`；其余命令在上游依赖会话列表卡 / 建会话表单 /
-   * 模型与权限预设（后续层），这里**显式回报尚未移植**，绝不假装成功。
+   * 已完整移植 `/help` 与 `/stop`；其余命令依赖后续层（会话列表卡 / 建会话表单 /
+   * 模型与权限预设），这里显式回报尚未移植，绝不假装成功。
    */
   async function handleCommand(
     text: string,
-    message: { chatId: string; threadId?: string },
+    message: { chatId: string; threadId?: string; senderId?: string },
   ): Promise<void> {
     const parsed = parseCommand(text);
     if (!parsed) return;
@@ -200,20 +228,45 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       case "help":
         await sendNotice(message.chatId, helpText(scope), "blue");
         return;
+      case "new":
+      case "form": {
+        // 最小可用版 `/new`（完整表单卡＝目录/模型/权限预填属于后续层）：
+        // 建会话 → 记为当前 → 发一张"根卡"并把它的 messageId 绑成 root。
+        // 用户**回复**这张卡时消息只带 root_id（没有 thread_id），正是
+        // `decideRoute` 的 root 兜底分支所在（上游 `session-map.ts` 的 root 映射即此用途）。
+        const openId = message.senderId ?? "";
+        const title = parsed.args || defaultSessionTitle(Date.now());
+        const sessionId = await port.createSession({ cwd: config.cwd, title });
+        const map = await sessionMap();
+        await map.addSession(message.chatId, sessionId, title, openId, { setActive: true });
+        const root = await channel.send(message.chatId, {
+          card: buildNoticeCard({
+            title: "会话已创建",
+            text: `${title}\n\n**回复本条消息**即可开始对话（回复即进入该会话的话题）。`,
+            template: "green",
+          }),
+        });
+        await map.bindRoot(root.messageId, sessionId);
+        log.info("已建会话并开话题锚点", { sessionId, rootMessageId: root.messageId });
+        return;
+      }
       case "stop": {
-        const topicStore = await store();
-        const record = topicStore.get(topicKey(message));
-        if (!record) {
+        const map = await sessionMap();
+        const target =
+          scope === "thread" && message.threadId
+            ? (await map.resolveByThread(message.threadId))?.sessionID
+            : (await map.getActive(message.chatId))?.sessionID;
+        if (!target) {
           await sendNotice(message.chatId, "当前聊天还没有绑定会话。", "grey");
           return;
         }
-        const agent = await port.resolveAgent(record.sessionId);
+        const agent = await port.resolveAgent(target);
         if (!agent) {
           await sendNotice(message.chatId, "会话没有存活的 agent，无法中断。", "grey");
           return;
         }
         await agent.cancel({ kind: "user" });
-        await sendNotice(message.chatId, `已请求中断会话 \`${record.sessionId}\`。`, "orange");
+        await sendNotice(message.chatId, `已请求中断会话 \`${target}\`。`, "orange");
         return;
       }
       default:
@@ -222,6 +275,62 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
           `命令 \`/${parsed.raw}\` 的完整逻辑尚未逐层移植到本插件（见 README 的移植计划）。\n\n${helpText(scope)}`,
           "orange",
         );
+    }
+  }
+
+  /**
+   * 投递到已解析好的会话：**先发运行卡，再投递**。
+   *
+   * 顺序来自上游 `beginRun`（`src/index.ts:1242`）：`followup()` 会立刻唤醒 agent，
+   * 先投递再发卡会丢掉这一轮最早的流式事件（卡片会永远停在「运行中」，实测出现过双卡）。
+   */
+  async function runInSession(
+    sessionId: string,
+    message: InboundMessageLike,
+    decision: Extract<InboundDecision, { kind: "deliver" }>,
+  ): Promise<void> {
+    const running = tracker.isRunning(sessionId);
+
+    let card = runCards.get(sessionId);
+    if (card && isTerminal(card.currentState)) {
+      await settleRunCard(sessionId);
+      card = undefined;
+    }
+    if (!card) {
+      const map = await sessionMap();
+      const entry = await map.getSession(message.chatId, sessionId);
+      card = new RunCard(cardPort, log, {
+        chatId: message.chatId,
+        title: entry?.title || "飞书会话",
+        stopToken: signStop({ sessionID: sessionId, ttlMs: config.approvalTtlMs }, config.signSecret),
+        throttleMs: config.cardThrottleMs,
+        maxTextChars: config.cardMaxTextChars,
+        maxToolBlocks: config.cardMaxToolBlocks,
+        maxCardChars: config.cardMaxChars,
+      });
+      runCards.set(sessionId, card);
+      await card.start();
+    }
+
+    tracker.markStarted(sessionId);
+    try {
+      const outcome = await deliverToSession(port, sessionId, message, decision, {
+        running,
+        busyDelivery: config.busyDelivery,
+      });
+      log.info("已投递到会话", {
+        sessionId,
+        delivery: outcome.delivery,
+        attachments: decision.attachmentCount,
+        chars: decision.text.length,
+        sender: maskId(message.senderId),
+      });
+    } catch (error) {
+      const reason = errorMessage(error);
+      log.error("投递失败", { reason, sender: maskId(message.senderId) });
+      card.handle({ type: "turn-end", outcome: "failed", reason });
+      await settleRunCard(sessionId);
+      await sendNotice(message.chatId, `投递失败：${reason}`, "red");
     }
   }
 
@@ -258,27 +367,28 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     return { toast: { type: "success", content: "已请求中断" } };
   });
 
+  /** 入站主流程（与上游 `handleMessage` 同序）。 */
   channel.onMessage(async (message) => {
     if (disposed) return;
-    const allowed = await ownerPolicy.admit(message.senderId);
     const inbound = message as InboundMessageLike;
-    const decision = decideInbound(inbound, {
-      allowed,
-      groupEnabled: config.groupEnabled,
-      // M4：改为读 agent 投影状态（不轮询，用事件维护）。
-      busy: false,
-      busyDelivery: config.busyDelivery,
-    });
 
-    if (decision.kind === "ignore") {
-      log.debug("忽略入站消息", { reason: decision.reason, sender: maskId(message.senderId) });
+    // 1) owner 白名单（首个发消息者绑定为 owner）。
+    const allowed = await ownerPolicy.admit(message.senderId);
+
+    // 2) 门禁与命令识别（群开关 / bot 回环 / 空消息 / 命令）。
+    const gate = decideInbound(inbound, { allowed, groupEnabled: config.groupEnabled });
+    if (gate.kind === "ignore") {
+      log.debug("忽略入站消息", { reason: gate.reason, sender: maskId(message.senderId) });
       return;
     }
-    if (decision.kind === "command") {
+
+    // 3) 命令优先拦截：绝不把 `/xxx` 当 prompt 发给模型。
+    if (gate.kind === "command") {
       try {
-        await handleCommand(decision.text, {
+        await handleCommand(gate.text, {
           chatId: message.chatId,
           ...(message.threadId ? { threadId: message.threadId } : {}),
+          ...(message.senderId ? { senderId: message.senderId } : {}),
         });
       } catch (error) {
         log.error("命令处理失败", { reason: errorMessage(error) });
@@ -286,69 +396,69 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       return;
     }
 
-    let attemptedSession: string | undefined;
-    try {
-      const topicStore = await store();
-      // 顺序不能反：先解析/建会话 → 再发运行卡 → 最后才投递。
-      // followup() 会立刻唤醒 agent，先投递再发卡会丢掉这一轮最早的流式事件（M3b 的双卡 bug）。
-      const prepared = await prepareDelivery(topicStore, port, inbound, decision, {
-        cwd: config.cwd,
-        titleMaxChars: config.topicTitleMaxChars,
-      });
-      attemptedSession = prepared.sessionId;
-      sessionChats.set(prepared.sessionId, message.chatId);
+    const map = await sessionMap();
 
-      let card = runCards.get(prepared.sessionId);
-      if (card && isTerminal(card.currentState)) {
-        // 上一轮已结束：收尾旧卡，这一轮换一张新卡。
-        await settleRunCard(prepared.sessionId);
-        card = undefined;
+    // 4) threadRouting=false 的回退：忽略 thread/root，普通文本进"当前活动会话"。
+    if (!config.threadRouting) {
+      const active = await map.getActive(message.chatId);
+      if (!active) {
+        await sendMainHint(message.chatId);
+        return;
       }
-      if (!card) {
-        card = new RunCard(cardPort, log, {
-          chatId: message.chatId,
-          title: prepared.title,
-          stopToken: signStop({ sessionID: prepared.sessionId, ttlMs: config.approvalTtlMs }, config.signSecret),
-          throttleMs: config.cardThrottleMs,
-          maxTextChars: config.cardMaxTextChars,
-          maxToolBlocks: config.cardMaxToolBlocks,
-          maxCardChars: config.cardMaxChars,
-        });
-        runCards.set(prepared.sessionId, card);
-        await card.start();
-      }
+      await runInSession(active.sessionID, inbound, gate);
+      return;
+    }
 
-      await sendDelivery(prepared, port, inbound, decision);
+    // 5) 路由：thread 命中 → root 命中（即使没有 threadId 也算，回复卡片走这条）
+    //    → 话题首条消息建会话 → 主聊天流回管理台提示卡。
+    const hasThread = Boolean(message.threadId);
+    const threadLink = hasThread ? await map.resolveByThread(message.threadId!) : undefined;
+    const rootLink = !threadLink && message.rootId ? await map.resolveByRoot(message.rootId) : undefined;
+    const route = decideRoute({
+      hasThread,
+      isCommand: false,
+      threadKnown: Boolean(threadLink),
+      rootKnown: Boolean(rootLink),
+    });
 
-      log.info("已投递到会话", {
-        sessionId: prepared.sessionId,
-        created: prepared.created,
-        delivery: decision.delivery,
-        attachments: decision.attachmentCount,
-        chars: decision.text.length,
-        sender: maskId(message.senderId),
-      });
-    } catch (error) {
-      const reason = errorMessage(error);
-      log.error("投递失败", { reason, sender: maskId(message.senderId) });
-      // 卡片可能已经发出去了：收成失败态，绝不留下永远「运行中」的卡。
-      if (attemptedSession) {
-        const card = runCards.get(attemptedSession);
-        if (card && !isTerminal(card.currentState)) {
-          card.handle({ type: "turn-end", outcome: "failed", reason });
-          await settleRunCard(attemptedSession);
+    if (route.kind === "main-hint") {
+      await sendMainHint(message.chatId);
+      return;
+    }
+
+    if (route.kind === "use-session") {
+      const sessionId = threadLink?.sessionID ?? rootLink?.sessionID;
+      if (!sessionId) return;
+      const anchor = message.rootId ?? message.messageId;
+      // root 命中补写 thread 映射；thread 命中但缺锚点时补齐锚点（审批卡出站要落同一话题）。
+      if (route.source === "root" || (threadLink && !threadLink.anchorMessageId)) {
+        if (message.threadId) {
+          await map.bindThread(message.threadId, sessionId, message.chatId, message.senderId ?? "", anchor);
         }
       }
-      await sendNotice(message.chatId, `投递失败：${reason}`, "red");
+      log.debug("话题路由命中会话", { source: route.source, sessionId, threadId: message.threadId });
+      await runInSession(sessionId, inbound, gate);
+      return;
     }
+
+    // create-in-thread：话题内第一条消息 → 新建会话并绑定 thread/root。
+    const title = topicTitle(gate.text, config.topicTitleMaxChars);
+    const sessionId = await port.createSession({ cwd: config.cwd, title });
+    await map.addSession(message.chatId, sessionId, title, message.senderId ?? "", { setActive: false });
+    const anchor = message.rootId ?? message.messageId;
+    await map.bindThread(message.threadId!, sessionId, message.chatId, message.senderId ?? "", anchor);
+    await map.bindRoot(anchor, sessionId);
+    log.info("话题新建会话", { sessionId, threadId: message.threadId, chatId: maskId(message.chatId) });
+    await runInSession(sessionId, inbound, gate);
   });
 
-  // —— dsh 侧事件：流式正文 + 持久结算 ——
+  // —— dsh 侧事件：判活（steer/queue）+ 流式正文 + 持久结算 ——
 
   ctx.on("agent/assistant-stream", (payload) => {
     if (disposed) return;
     const sessionId = sessionIdOfAgent(payload.agent);
     if (!sessionId) return;
+    tracker.touch(sessionId);
     const card = runCards.get(sessionId);
     if (!card) return;
     const event = mapStreamFrame(payload.frame as unknown as AssistantStreamFrameLike);
@@ -359,6 +469,10 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     if (disposed) return;
     const sessionId = sessionIdOfSession(session);
     if (!sessionId) return;
+    tracker.touch(sessionId);
+    if (event.type === "step/start") tracker.markStarted(sessionId);
+    if (event.type === "turn/end") tracker.markEnded(sessionId);
+
     const card = runCards.get(sessionId);
     if (!card) return;
 
@@ -404,6 +518,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       domain: config.domain,
       gate: config.permissionGate,
       busyDelivery: config.busyDelivery,
+      threadRouting: config.threadRouting,
       groupEnabled: config.groupEnabled,
       roots: config.allowedRoots.length,
       cardThrottleMs: config.cardThrottleMs,
@@ -416,6 +531,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       for (const sessionId of [...runCards.keys()]) {
         await settleRunCard(sessionId);
       }
+      closeKv?.();
       sink?.close();
     };
   });

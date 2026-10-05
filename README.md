@@ -18,6 +18,32 @@
 
 上游 `index.ts`(1801 行) 里约 80% 是"能力探测 + HTTP 兜底 + 多实例防御"，在单一宿主里应当**变短**而不是复用：去掉兜底后装配层预计落到 500–700 行。
 
+## 逐层搬运上游逻辑（进行中）
+
+按"**先把上游测试搬来当规格，再让实现通过**"的方式逐层搬（避免凭理解重写行为）：
+
+| 层 | 上游文件 | 本仓库 | 上游规格测试 | 状态 |
+|---|---|---|---|---|
+| 路由 | `src/feishu/routing.ts` | `src/bridge/routing.ts` | `test/routing.test.ts`（8 用例） | ✅ |
+| 会话映射 | `src/feishu/session-map.ts`（582 行，5 层 key） | `src/bridge/session-map.ts` | `test/session-map.test.ts`（24 用例） | ✅ |
+| 命令矩阵 | `src/feishu/commands.ts`（16 命令 + 双 scope） | `src/bridge/commands.ts` | `test/commands.test.ts`（21 用例） | ✅ |
+| 投递决策 | `src/feishu/delivery.ts` | `src/bridge/delivery.ts` | `test/delivery.test.ts`（10 用例） | ✅ |
+| 运行卡 | `run-state/run-renderer/cards/card-limits` | 同名（`bridge/`、`feishu/`） | `test/run-*.test.ts`、`cards/card-limits`（79 用例） | ✅ |
+| token / 白名单 / 日志 | `security/token`、`security/allowlist`、`logger` | 同名 | 逐条搬运 | ✅ |
+| 入站主流程接线 | `src/index.ts:816-918` `handleMessage` | `src/index.ts` | 由 `routing`/`session-map` 规格覆盖 | ✅ |
+| 建会话表单 / 会话列表卡 / 恢复摘要 | `setup-wizard`、`session-list`、`resume-summary` 等 | — | — | ⬜ |
+| 审批 / 提问 / 看门狗 / 附件 | `permission`、`form-relay`、`watchdog`、`attachments` | — | — | ⬜ |
+
+**产品语义（来自上游，已落地）**：
+- 主聊天流（无 `thread_id` 的普通文本）= **管理台**，普通文本**不进入任何会话**，回管理台提示卡；
+- 话题（回复形成 thread / 回复根卡带 `root_id`）→ 路由到会话；
+- 命令**先于路由**拦截，绝不把 `/xxx` 当 prompt；
+- 忙时投递：空闲 → `steer`；忙时按 `busyDelivery`（默认 `steer` 插队 / `queue` 排队）；
+- 话题内命令有白名单（`/new` `/sessions` `/use` `/resume` `/dir` `/cancel` `/form` 被禁，引导回主聊天流）。
+
+**DM 场景怎么用**（没有 quickNew 时的上游行为）：`/new` 建会话并发出"根卡" → **回复那张卡**开始对话
+（回复只带 `root_id`，正是 `decideRoute` 的 root 兜底分支）；或把 `threadRouting` 设为 `false` 走"普通文本进当前会话"的回退模式。
+
 ## 架构
 
 ```

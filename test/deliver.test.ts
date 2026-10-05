@@ -1,7 +1,14 @@
+/**
+ * 投递层规格。
+ *
+ * 上游没有独立的 `deliver.test.ts`（投递逻辑在 `index.ts` 的 `runInSession` 里），
+ * 这里按上游语义把可测部分固化成规格：**先由路由拿到会话，再在投递时用
+ * `decideDelivery(running, busyDelivery)` 决定 steer / queue**（判定规格见
+ * `test/delivery.test.ts`），并保证 `steer → agent.steer()`、`queue → agent.followup()` 的映射。
+ */
 import { describe, expect, test } from "vitest";
-import { deliverInbound, prepareDelivery, sendDelivery, type DeliveryPort } from "../src/bridge/deliver.js";
+import { deliverToSession, type DeliveryPort } from "../src/bridge/deliver.js";
 import type { InboundMessageLike } from "../src/bridge/inbound.js";
-import { MemoryTopicStore } from "../src/bridge/topics.js";
 import type { AgentLike } from "../src/types.js";
 
 const MESSAGE: InboundMessageLike = {
@@ -12,126 +19,89 @@ const MESSAGE: InboundMessageLike = {
   content: "帮我看看构建为什么失败",
 };
 
-const DECISION = { kind: "deliver", text: "帮我看看构建为什么失败", delivery: "queue", attachmentCount: 0 } as const;
+const DECISION = { kind: "deliver", text: "帮我看看构建为什么失败", attachmentCount: 0 } as const;
 
-function harness(options: { failResolve?: boolean } = {}) {
-  const created: Array<{ cwd: string; title: string }> = [];
-  const steered: unknown[] = [];
-  const followed: unknown[] = [];
+interface Harness {
+  port: DeliveryPort;
+  calls: string[];
+  built: unknown[];
+}
+
+function harness(options: { resolveAgent?: boolean } = {}): Harness {
+  const calls: string[] = [];
+  const built: unknown[] = [];
   const agent: AgentLike = {
-    followup: (message) => followed.push(message),
-    steer: (message) => steered.push(message),
-    inject: () => {},
-    cancel: () => {},
+    followup: () => calls.push("followup"),
+    steer: () => calls.push("steer"),
+    inject: () => calls.push("inject"),
+    cancel: () => calls.push("cancel"),
   };
   const port: DeliveryPort = {
     log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-    createUserMessage: ({ text, source }) => ({ text, source }),
-    createSession: async ({ cwd, title }) => {
-      created.push({ cwd, title });
-      return `feishu-session-${created.length}`;
+    createSession: async () => "feishu-session-1",
+    resolveAgent: () => (options.resolveAgent === false ? undefined : agent),
+    createUserMessage: (input) => {
+      built.push(input);
+      return { kind: "user-message" };
     },
-    resolveAgent: () => (options.failResolve ? undefined : agent),
   };
-  return { created, steered, followed, agent, port };
+  return { port, calls, built };
 }
 
-describe("prepareDelivery / sendDelivery（先发卡再投递的顺序保证）", () => {
-  test("prepare 只解析/建会话，不向会话注入消息", async () => {
-    const store = new MemoryTopicStore();
+describe("deliverToSession", () => {
+  test("空闲 → steer（decideDelivery 规格：空闲恒为 steer）", async () => {
     const h = harness();
-    const prepared = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 7 });
-
-    expect(prepared).toEqual({
-      sessionId: "feishu-session-1",
-      created: true,
-      title: "话题: 帮我看看构建为什么失败",
-      cwd: "/tmp/work",
+    const outcome = await deliverToSession(h.port, "ses_1", MESSAGE, DECISION, {
+      running: false,
+      busyDelivery: "queue",
     });
-    expect(h.followed).toHaveLength(0);
-    expect(h.steered).toHaveLength(0);
-    expect(store.get("chat:oc_1")?.sessionId).toBe("feishu-session-1");
-
-    // 第二步才注入
-    await sendDelivery(prepared, h.port, MESSAGE, DECISION);
-    expect(h.followed).toHaveLength(1);
+    expect(outcome).toEqual({ delivery: "steer" });
+    expect(h.calls).toEqual(["steer"]);
   });
 
-  test("prepare 幂等：第二次返回同一会话且 created=false", async () => {
-    const store = new MemoryTopicStore();
+  test("忙 + busyDelivery=steer → steer 插队", async () => {
     const h = harness();
-    const first = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1 });
-    const second = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 2 });
-    expect(second.sessionId).toBe(first.sessionId);
-    expect(second.created).toBe(false);
-    expect(h.created).toHaveLength(1);
-    expect(store.get("chat:oc_1")?.updatedAt).toBe(2);
+    const outcome = await deliverToSession(h.port, "ses_1", MESSAGE, DECISION, {
+      running: true,
+      busyDelivery: "steer",
+    });
+    expect(outcome.delivery).toBe("steer");
+    expect(h.calls).toEqual(["steer"]);
   });
 
-  test("titleMaxChars 透传给标题生成", async () => {
-    const store = new MemoryTopicStore();
+  test("忙 + busyDelivery=queue → queue 映射到 followup 排队", async () => {
     const h = harness();
-    const prepared = await prepareDelivery(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", titleMaxChars: 4 });
-    expect(prepared.title).toBe("话题: 帮我看看…");
+    const outcome = await deliverToSession(h.port, "ses_1", MESSAGE, DECISION, {
+      running: true,
+      busyDelivery: "queue",
+    });
+    expect(outcome.delivery).toBe("queue");
+    expect(h.calls).toEqual(["followup"]);
   });
-});
 
-describe("deliverInbound", () => {
-  test("首次消息：新建会话、写入映射、queue 投递（dsh: followup）", async () => {
-    const store = new MemoryTopicStore();
+  test("消息来源标记为 feishu 并带上 chat/message/sender", async () => {
     const h = harness();
-    const result = await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1000 });
-
-    expect(result).toEqual({ sessionId: "feishu-session-1", created: true });
-    expect(h.created).toEqual([{ cwd: "/tmp/work", title: "话题: 帮我看看构建为什么失败" }]);
-    expect(h.followed).toHaveLength(1);
-    expect(h.steered).toHaveLength(0);
-    expect(store.get("chat:oc_1")).toEqual({
-      sessionId: "feishu-session-1",
-      cwd: "/tmp/work",
-      title: "话题: 帮我看看构建为什么失败",
-      chatId: "oc_1",
-      updatedAt: 1000,
+    await deliverToSession(h.port, "ses_1", MESSAGE, DECISION, { running: false, busyDelivery: "steer" });
+    expect(h.built[0]).toEqual({
+      text: "帮我看看构建为什么失败",
+      source: { kind: "feishu", senderId: "ou_1", chatId: "oc_1", messageId: "om_1" },
     });
   });
 
-  test("同一 chat 的后续消息复用会话，只刷新 updatedAt", async () => {
-    const store = new MemoryTopicStore();
+  test("threadId 透传进来源标记", async () => {
     const h = harness();
-    await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1000 });
-    const second = await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 2000 });
-
-    expect(second).toEqual({ sessionId: "feishu-session-1", created: false });
-    expect(h.created).toHaveLength(1);
-    expect(store.get("chat:oc_1")?.updatedAt).toBe(2000);
-    expect(h.followed).toHaveLength(2);
+    await deliverToSession(h.port, "ses_1", { ...MESSAGE, threadId: "omt_9" }, DECISION, {
+      running: false,
+      busyDelivery: "steer",
+    });
+    expect((h.built[0] as { source: Record<string, unknown> }).source).toMatchObject({ threadId: "omt_9" });
   });
 
-  test("话题维度独立：带 threadId 的消息走自己的会话", async () => {
-    const store = new MemoryTopicStore();
-    const h = harness();
-    await deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work", now: () => 1 });
-    const threaded = { ...MESSAGE, threadId: "omt_9" };
-    const result = await deliverInbound(store, h.port, threaded, DECISION, { cwd: "/tmp/work", now: () => 2 });
-
-    expect(result.sessionId).toBe("feishu-session-2");
-    expect(store.get("thread:omt_9")?.threadId).toBe("omt_9");
-    expect(h.created).toHaveLength(2);
-  });
-
-  test("steer 决策走插队路径", async () => {
-    const store = new MemoryTopicStore();
-    const h = harness();
-    await deliverInbound(store, h.port, MESSAGE, { ...DECISION, delivery: "steer" }, { cwd: "/tmp/work" });
-    expect(h.steered).toHaveLength(1);
-    expect(h.followed).toHaveLength(0);
-  });
-
-  test("agent 无法解析时抛错（调用方记日志，不静默丢消息）", async () => {
-    const store = new MemoryTopicStore();
-    const h = harness({ failResolve: true });
-    await expect(deliverInbound(store, h.port, MESSAGE, DECISION, { cwd: "/tmp/work" })).rejects.toThrow(
-      /无法解析为存活 agent/,
-    );
+  test("agent 无法解析时抛错（调用方记日志并把运行卡收成 failed）", async () => {
+    const h = harness({ resolveAgent: false });
+    await expect(
+      deliverToSession(h.port, "ses_1", MESSAGE, DECISION, { running: false, busyDelivery: "steer" }),
+    ).rejects.toThrow(/无法解析为存活 agent/);
+    expect(h.calls).toEqual([]);
   });
 });
