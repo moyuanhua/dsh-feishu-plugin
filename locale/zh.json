@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "飞书桥（Feishu Bridge）",
+    "description": "把 DeepSeek Harness 接进飞书：一个话题一个会话，卡内审批与提问，仅需 p2p 读 + 发消息两个权限，全程长连接、无公网入口。"
+  }
+}

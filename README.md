@@ -48,6 +48,49 @@
 **DM 场景怎么用**（没有 quickNew 时的上游行为）：`/new` 建会话并发出"根卡" → **回复那张卡**开始对话
 （回复只带 `root_id`，正是 `decideRoute` 的 root 兜底分支）；或把 `threadRouting` 设为 `false` 走"普通文本进当前会话"的回退模式。
 
+## 结论：为什么单独开仓库（实测数据）
+
+目标里要求判断"在原项目上抽象共用内核 vs 单独开新项目"。搬完 17 个模块后的**实测**：
+
+| 类别 | 文件数 | 行数 | 占比 | 说明 |
+|---|---:|---:|---:|---|
+| **搬运行**（近乎逐行） | 17 | 3,345 | **51%** | 路由 / 会话映射 / 命令矩阵 / 投递决策 / 权限策略与预设 / 表单 / 看门狗 / 恢复例程 / 运行态与渲染 / 卡片与守卫 / token / 白名单 / 日志 / TTL Map |
+| **宿主适配新增** | 15 | 3,226 | **49%** | `index.ts` 入站主流程、审批桥与提问桥（waterfall 变体）、出站运行卡、附件入库、`dsh/` 适配层（agents / storageDomain / attachments / MessageSource）、配置、连接 supervisor、安装 CLI |
+
+结论与依据：
+
+1. **上游有一半代码是"纯逻辑"，且这部分几乎零改动可搬** —— 这是新开仓库的最大收益，也是"抽象"唯一有价值的部分；
+2. **另一半是宿主语义**（opencode 是 `permission.evaluate` hook + `session.prompt {delivery}` + `session.form.reply` + location 保活；dsh 是 `approval/request` / `user-questions/request` waterfall + `agent.followup/steer` + `ctx.storageDomain` + 无 location 回收）。这部分**不可能共用**：适配层只能各写一份；
+3. 因此若"在上游项目上抽象共用内核"，等于要在**一个正在迭代的 15k 行单宿主插件**里先做重构，去服务一个尚未验证的第二宿主 —— 而实测证明共用的上限就是那 51%；
+4. 正确顺序是**先分离、后抽象**：本仓库已经把 51% 稳定成"可搬运层"（其中 `security/`、`utils/`、`bridge/run-*`、`bridge/forms.ts`、`bridge/permission.ts` 更是零宿主依赖），等 dsh 版跑稳，再把这几块抽成独立 npm 包**反向**提供给 opencode 侧。
+
+## 验证状态（截至本轮）
+
+| 验证项 | 证据 |
+|---|---|
+| 单元/规格测试 | **24 文件 / 326 用例全绿**（其中 12 个文件是上游规格逐条搬运） |
+| typecheck / build | 通过 |
+| 真实宿主加载（开发叠加层） | `已加载` → SDK 初始化 → `飞书长连接已建立`（多轮） |
+| **生产安装路径** | `pnpm pack` → tarball（164 条目 / 0 node_modules）→ `dsh plugin --profile feishu add` → `bundles` 追加 → `--dump-config` 出现 `# == dsh-feishu-plugin` 层 → 启动并建立长连接 |
+| **peer 解析** | 该 profile 的 `node_modules/@deepseek-ai/` 里只有 cosmokit+schemastery，插件仍能启动 → 7 个 `dsh-*` 均从运行时安装目录解析 |
+| 真实飞书入站 | 收到消息、owner 绑定、决策、投递（M3a 阶段实测） |
+| 安装准备 CLI | 占位符 → `false`（已写入）→ 再跑幂等（无需修改）；`node_modules/.bin` 符号链接调用正常 |
+| **飞书端到端闭环（建会话 → 运行卡 → 审批卡 → 结果）** | ⬜ **待人工验证**（需要你在飞书里发消息与点击） |
+
+## 命令可用性
+
+| 已实现 | 行为 |
+|---|---|
+| `/help` | 按 scope 显示（主聊天流 / 话题内两套文案） |
+| `/new`（= `/form`） | 最小可用：建会话 → 记为当前 → 发"根卡"，**回复根卡**即进入该会话 |
+| `/current` | 显示当前/话题会话（标题、id、权限档位、目录） |
+| `/sessions`（= `/ls`） | 列出本聊天的会话（带序号与「← 当前」），提示用 `/use` 切换 |
+| `/use <序号\|前缀>` | 切换当前会话（前缀歧义/未命中给专门提示） |
+| `/perm [档位]` | 查看/设置会话权限档位（直接影响审批门判定） |
+| `/steer <文本>` | 强制插队投递（走同一投递路径，`decideDelivery` 返回 steer） |
+| `/stop` | 与卡片「强制停止」共用同一恢复例程 |
+| 尚未移植 | `/model`（dsh 模型接缝未接入）、`/cd`（dsh 会话目录创建后不可变更）、`/now`（无 park 队列提升接口）、`/dir` `/cancel` `/resume`（依赖建会话表单与会话列表卡）；都会**明确回报原因**，不假装成功 |
+
 ## 架构
 
 ```

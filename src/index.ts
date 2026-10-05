@@ -53,6 +53,7 @@ import {
   type SessionEventLike,
 } from "./bridge/outbound.js";
 import { commandScope, decideRoute } from "./bridge/routing.js";
+import { planSessionCommand } from "./bridge/session-commands.js";
 import { isTerminal } from "./bridge/run-state.js";
 import { SessionMap } from "./bridge/session-map.js";
 import { Config, resolveConfig, type Config as ConfigShape } from "./config.js";
@@ -318,7 +319,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
    */
   async function handleCommand(
     text: string,
-    message: { chatId: string; threadId?: string; senderId?: string },
+    message: { chatId: string; threadId?: string; senderId?: string; messageId?: string },
   ): Promise<void> {
     const parsed = parseCommand(text);
     if (!parsed) return;
@@ -374,11 +375,63 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
         return;
       }
       default:
+        break;
+    }
+
+    // 其余命令交给纯规划器（会话列表 / 切换 / 档位 / 插队），执行器只翻译计划。
+    const mapForCommand = await sessionMap();
+    const sessions = await mapForCommand.listSessions(message.chatId);
+    const activeId = mapForCommand.getSessionIdForChat(message.chatId);
+    const threadSessionId = message.threadId
+      ? (await mapForCommand.resolveByThread(message.threadId))?.sessionID
+      : undefined;
+    const targetId = scope === "thread" ? threadSessionId : activeId;
+    const link = targetId ? await mapForCommand.resolveBySession(targetId) : undefined;
+
+    const plan = planSessionCommand({
+      parsed,
+      scope,
+      sessions,
+      ...(activeId ? { activeId } : {}),
+      ...(threadSessionId ? { threadSessionId } : {}),
+      ...(link ? { link } : {}),
+    });
+
+    switch (plan.kind) {
+      case "notice":
+        await sendNotice(message.chatId, plan.text, plan.template);
+        return;
+      case "set-active":
+        await mapForCommand.setActive(message.chatId, plan.sessionId);
+        await sendNotice(message.chatId, plan.note, "green");
+        return;
+      case "set-perm":
+        await mapForCommand.setSessionMeta(plan.sessionId, { perm: plan.perm });
+        log.info("会话权限档位已更新", { sessionId: plan.sessionId, perm: plan.perm });
+        await sendNotice(message.chatId, plan.note, "green");
+        return;
+      case "steer": {
+        // 强制插队：用 synthesized message 走同一投递路径（forceSteer → decideDelivery 返回 steer）。
+        const synthesized = {
+          messageId: message.messageId ?? `cmd_${Date.now()}`,
+          chatId: message.chatId,
+          chatType: "p2p" as const,
+          ...(message.senderId ? { senderId: message.senderId } : {}),
+          ...(message.threadId ? { threadId: message.threadId } : {}),
+          content: plan.text,
+        };
+        await runInSession(plan.sessionId, synthesized, { kind: "deliver", text: plan.text, attachmentCount: 0 }, {
+          forceSteer: true,
+        });
+        return;
+      }
+      case "unsupported":
         await sendNotice(
           message.chatId,
-          `命令 \`/${parsed.raw}\` 的完整逻辑尚未逐层移植到本插件（见 README 的移植计划）。\n\n${helpText(scope)}`,
+          `命令 \`/${plan.raw}\` 尚未移植到 dsh 版：${plan.reason}。\n\n${helpText(scope)}`,
           "orange",
         );
+        return;
     }
   }
 
@@ -392,8 +445,9 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     sessionId: string,
     message: InboundMessageLike,
     decision: Extract<InboundDecision, { kind: "deliver" }>,
+    options: { readonly forceSteer?: boolean } = {},
   ): Promise<void> {
-    const running = tracker.isRunning(sessionId);
+    const running = options.forceSteer ? true : tracker.isRunning(sessionId);
 
     let card = runCards.get(sessionId);
     if (card && isTerminal(card.currentState)) {
@@ -451,7 +505,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     try {
       const outcome = await deliverToSession(port, sessionId, message, { ...decision, text }, {
         running,
-        busyDelivery: config.busyDelivery,
+        busyDelivery: options.forceSteer ? "steer" : config.busyDelivery,
         ...(parts.length > 0 ? { parts } : {}),
       });
       log.info("已投递到会话", {
@@ -531,6 +585,7 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       try {
         await handleCommand(gate.text, {
           chatId: message.chatId,
+          messageId: message.messageId,
           ...(message.threadId ? { threadId: message.threadId } : {}),
           ...(message.senderId ? { senderId: message.senderId } : {}),
         });

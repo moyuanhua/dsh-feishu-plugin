@@ -28,7 +28,9 @@
       "default": "./lib/index.js"
     },
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "files": [
     "LICENSE",
@@ -36,7 +38,9 @@
     "README.md",
     "cordis.patch.yml",
     "lib",
-    "src"
+    "src",
+    "locale",
+    "icon.svg"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Feishu Bridge">
+  <rect width="128" height="128" rx="28" fill="#1664FF"/>
+  <path d="M64 24c-15 0-27 10-27 22 0 7 4 13 11 17-2 5-6 9-12 12 9 2 17 0 23-4 2 0 3 1 5 1 15 0 27-10 27-22S79 24 64 24z" fill="#fff" opacity="0.95"/>
+  <circle cx="53" cy="45" r="4" fill="#1664FF"/>
+  <circle cx="75" cy="45" r="4" fill="#1664FF"/>
+  <path d="M30 92h68" stroke="#fff" stroke-width="8" stroke-linecap="round" opacity="0.9"/>
+</svg>
