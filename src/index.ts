@@ -37,6 +37,7 @@ import {
   topicTitle,
 } from "./bridge/commands.js";
 import { ApprovalBridge } from "./bridge/approval.js";
+import { attachmentNotice, ingestAttachments, type InboundResourceLike } from "./bridge/attachments.js";
 import { QuestionBridge } from "./bridge/questions.js";
 import { createSessionRecovery } from "./bridge/session-recovery.js";
 import { startWatchdog } from "./bridge/watchdog.js";
@@ -77,7 +78,7 @@ import { MemoryStorage } from "./types.js";
 export const name = "feishu";
 
 /** 必需服务：投递消息要 agents；会话映射要 storageDomain。 */
-export const inject: readonly string[] = ["agents", "storageDomain"];
+export const inject: readonly string[] = ["agents", "storageDomain", "attachments"];
 
 export { Config, resolveConfig };
 export type { ResolvedConfig } from "./config.js";
@@ -416,10 +417,42 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     }
 
     tracker.markStarted(sessionId);
+
+    // 入站附件：下载 → 交给附件服务换持久引用；失败/不支持类型降级为占位文本（不阻断消息）。
+    const resources = (message.resources ?? []) as readonly InboundResourceLike[];
+    let parts: unknown[] = [];
+    let text = decision.text;
+    if (resources.length > 0) {
+      const ingested = await ingestAttachments(message.messageId, resources, {
+        log,
+        download: async ({ messageId, fileKey, type }) => {
+          const data = await channel.downloadResource(messageId, fileKey, type);
+          return { data: new Uint8Array(data) };
+        },
+        admitImage: async (input) => {
+          const store = port.attachments;
+          if (!store) throw new Error("附件服务不可用");
+          return store.admitImage(input);
+        },
+        saveFile: async (input) => {
+          const store = port.attachments;
+          if (!store) throw new Error("附件服务不可用");
+          return store.saveFile(input);
+        },
+        maxBytes: config.maxAttachmentBytes,
+        timeoutMs: config.attachmentTimeoutMs,
+      });
+      parts = ingested.filter((item) => item.ok).map((item) => item.part);
+      const notice = attachmentNotice(ingested);
+      if (notice) text = `${text}\n\n${notice}`;
+      log.info("附件已处理", { sessionId, total: resources.length, accepted: parts.length });
+    }
+
     try {
-      const outcome = await deliverToSession(port, sessionId, message, decision, {
+      const outcome = await deliverToSession(port, sessionId, message, { ...decision, text }, {
         running,
         busyDelivery: config.busyDelivery,
+        ...(parts.length > 0 ? { parts } : {}),
       });
       log.info("已投递到会话", {
         sessionId,

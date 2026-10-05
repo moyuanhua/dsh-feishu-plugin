@@ -141,13 +141,31 @@ export interface AgentLike {
 }
 
 /**
+ * 附件入库端口（真实实现 = `ctx.attachments`）。
+ * 图片走 `admitPromptContent`（换成持久引用），文件走 `saveFile`。
+ */
+export interface AttachmentStorePort {
+  admitImage(input: {
+    readonly data: Uint8Array;
+    readonly mediaType: string;
+    readonly name?: string;
+  }): Promise<unknown>;
+  saveFile(input: { readonly data: Uint8Array; readonly name?: string }): Promise<unknown>;
+}
+
+/**
  * 桥接所需的宿主端口。由 `src/dsh/port.ts` 用真实 ctx 实现；
  * 单测用假实现，因此决策逻辑不需要 dsh 运行时。
  */
 export interface HostPort {
   readonly log: Logger;
   /** 构造一条 `role: 'user'` 消息（真实实现 = `@deepseek-ai/dsh-llm` 的 createUserMessage）。 */
-  createUserMessage(input: { readonly text: string; readonly source: MessageSource }): unknown;
+  createUserMessage(input: {
+    readonly text: string;
+    readonly source: MessageSource;
+    /** 附件部件（图片 = admitted 后的部件；文件 = `{type:'file', attachment}`）。 */
+    readonly parts?: readonly unknown[];
+  }): unknown;
   /** 按 sessionId 取回（必要时恢复）agent。 */
   resolveAgent(sessionId: string): Promise<AgentLike | undefined> | AgentLike | undefined;
 }

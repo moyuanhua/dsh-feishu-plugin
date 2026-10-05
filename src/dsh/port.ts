@@ -22,7 +22,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { DeliveryPort } from "../bridge/deliver.js";
 import { errorMessage } from "../logger.js";
-import type { AgentLike, Logger } from "../types.js";
+import type { AgentLike, AttachmentStorePort, Logger } from "../types.js";
 import { feishuSource } from "./source.js";
 
 function toSessionId(value: string): SessionId {
@@ -51,9 +51,20 @@ export function createDshPort(ctx: Context, log: Logger): DeliveryPort {
   return {
     log,
 
-    createUserMessage: ({ text, source }) =>
+    // 附件入库：图片走 admitPromptContent（换成持久引用），文件走 saveFile。
+    attachments: {
+      admitImage: async ({ data, mediaType, name }) => {
+        const admitted = await ctx.attachments.admitPromptContent([
+          { type: "image", mediaType: mediaType as never, data: Buffer.from(data).toString("base64"), ...(name ? { name } : {}) },
+        ]);
+        return admitted[0];
+      },
+      saveFile: ({ data, name }) => ctx.attachments.saveFile({ data, ...(name ? { name } : {}) }),
+    } satisfies AttachmentStorePort,
+
+    createUserMessage: ({ text, source, parts }) =>
       createUserMessage({
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text }, ...((parts ?? []) as never[])],
         source: feishuSource({
           chatId: source.chatId ?? "",
           messageId: source.messageId ?? "",

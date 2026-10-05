@@ -118,9 +118,14 @@ export async function applyDelivery(
   agent: AgentLike,
   port: HostPort,
   delivery: Delivery,
+  parts?: readonly unknown[],
 ): Promise<void> {
   if (decision.kind !== "deliver") return;
-  const userMessage = port.createUserMessage({ text: decision.text, source: sourceOf(message) });
+  const userMessage = port.createUserMessage({
+    text: decision.text,
+    source: sourceOf(message),
+    ...(parts && parts.length > 0 ? { parts } : {}),
+  });
   if (delivery === "steer") {
     await agent.steer(userMessage);
     return;

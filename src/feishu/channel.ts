@@ -67,6 +67,8 @@ export interface FeishuChannel {
     options?: SendOptions,
   ): Promise<SendResult>;
   updateCard(messageId: string, card: object): Promise<void>;
+  /** 下载一条消息里的资源（图片/文件）；音频/视频等由调用方降级处理。 */
+  downloadResource(messageId: string, fileKey: string, type: string): Promise<Buffer>;
 }
 
 export function createFeishuChannel(config: FeishuChannelConfig): FeishuChannel {
@@ -111,5 +113,7 @@ export function createFeishuChannel(config: FeishuChannelConfig): FeishuChannel 
     send: (chatId, input, sendOptions) => raw.send(chatId, input, sendOptions),
     reply: (target, input, sendOptions) => raw.reply(target, input, sendOptions),
     updateCard: (messageId, card) => raw.updateCard(messageId, card),
+    downloadResource: (messageId, fileKey, type) =>
+      raw.downloadResource(messageId, fileKey, type as Parameters<LarkChannel["downloadResource"]>[2]),
   };
 }

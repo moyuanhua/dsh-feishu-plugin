@@ -45,6 +45,9 @@ MIT License, Copyright (c) 2026 moyuanhua（见本仓库 `LICENSE`，与之同�
 | `test/watchdog.test.ts` | `test/watchdog.test.ts` |
 | `test/session-recovery.test.ts` | `test/session-recovery.test.ts` |
 
+附件层：`src/bridge/attachments.ts` 搬上游 `feishu/attachments.ts` 的**纯语义**（可支持类型、
+文件名清洗、大小上限、下载超时、失败降级为占位文本）；落盘部分按 dsh 的附件服务重写。
+
 宿主适配（本仓库新增，非搬运）：`src/bridge/questions.ts`（上游 `FormRelay` 的 waterfall 变体）、`src/bridge/approval.ts`（上游 `ApprovalManager` 的 waterfall 变体——
 dsh 用 `ctx.on('approval/request', …)` 直接 await 用户点击并返回结果词，不需要 evaluate hook + reply API），`src/dsh/port.ts`（`ctx.agents` / `createUserMessage`）、
 `src/dsh/storage.ts`（`ctx.storageDomain` → 上游 KV 端口）、`src/dsh/source.ts`（`MessageSourceMap` 增强）、

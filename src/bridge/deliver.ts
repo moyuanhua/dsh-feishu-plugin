@@ -11,13 +11,15 @@
  */
 import { decideDelivery, type Delivery } from "./delivery.js";
 import { applyDelivery, type InboundDecision, type InboundMessageLike } from "./inbound.js";
-import type { HostPort } from "../types.js";
+import type { AttachmentStorePort, HostPort } from "../types.js";
 
 export type DeliverDecision = Extract<InboundDecision, { kind: "deliver" }>;
 
 export interface DeliveryPort extends HostPort {
   /** 新建一个 dsh 会话，返回 sessionId。 */
   createSession(input: { readonly cwd: string; readonly title: string }): Promise<string>;
+  /** 附件入库端口（由 `src/dsh/port.ts` 接 `ctx.attachments`）。 */
+  readonly attachments?: AttachmentStorePort;
 }
 
 export interface DeliverOptions {
@@ -25,6 +27,8 @@ export interface DeliverOptions {
   readonly running: boolean;
   /** 忙时投递偏好（上游 `busyDelivery`）。 */
   readonly busyDelivery: Delivery;
+  /** 附件部件（可选）：随本条消息一起进入模型上下文。 */
+  readonly parts?: readonly unknown[];
 }
 
 /** 投递结果里带上实际使用的投递方式，便于日志与断言。 */
@@ -44,6 +48,6 @@ export async function deliverToSession(
     throw new Error(`会话 ${sessionId} 无法解析为存活 agent（可能已被 dispose 且不可 resume）`);
   }
   const delivery = decideDelivery(options.running, options.busyDelivery);
-  await applyDelivery(decision, message, agent, port, delivery);
+  await applyDelivery(decision, message, agent, port, delivery, options.parts);
   return { delivery };
 }

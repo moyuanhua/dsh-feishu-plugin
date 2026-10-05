@@ -68,6 +68,8 @@ export interface Config {
   attachmentsDir?: string;
   /** 单个入站附件上限（字节）。 */
   maxAttachmentBytes?: number;
+  /** 单个入站附件下载超时（ms）。 */
+  attachmentTimeoutMs?: number;
   /** 日志级别。 */
   logLevel?: LogLevel;
   /** 日志文件路径；true = 默认位置。 */
@@ -123,6 +125,7 @@ export const Config: z<Config> = z.object({
     .max(100 * 1024 * 1024)
     .default(20 * 1024 * 1024)
     .description("单个附件上限（字节）"),
+  attachmentTimeoutMs: z.number().min(1_000).max(300_000).default(30_000).description("附件下载超时（ms）"),
   logLevel: z
     .union([z.const("debug"), z.const("info"), z.const("warn"), z.const("error")])
     .default("info")
@@ -163,6 +166,7 @@ export interface ResolvedConfig {
   readonly stream: boolean;
   readonly attachmentsDir: string | undefined;
   readonly maxAttachmentBytes: number;
+  readonly attachmentTimeoutMs: number;
   readonly logLevel: LogLevel;
   readonly logFile: string | boolean;
   readonly connectBackoffInitialMs: number;
@@ -229,6 +233,7 @@ export function resolveConfig(raw: Config = {}): ResolvedConfig {
     stream: raw.stream !== false,
     attachmentsDir: raw.attachmentsDir?.trim() || undefined,
     maxAttachmentBytes: raw.maxAttachmentBytes ?? 20 * 1024 * 1024,
+    attachmentTimeoutMs: raw.attachmentTimeoutMs ?? 30_000,
     logLevel: raw.logLevel ?? "info",
     logFile: raw.logFile ?? false,
     connectBackoffInitialMs: raw.connectBackoffInitialMs ?? 500,
