@@ -38,6 +38,8 @@ import {
 } from "./bridge/commands.js";
 import { ApprovalBridge } from "./bridge/approval.js";
 import { QuestionBridge } from "./bridge/questions.js";
+import { createSessionRecovery } from "./bridge/session-recovery.js";
+import { startWatchdog } from "./bridge/watchdog.js";
 import { deliverToSession, type DeliveryPort } from "./bridge/deliver.js";
 import { ExecutionTracker } from "./bridge/delivery.js";
 import { decideInbound, type InboundDecision, type InboundMessageLike } from "./bridge/inbound.js";
@@ -277,6 +279,36 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
   }
 
   /**
+   * 会话恢复例程：**卡片强停按钮与看门狗共用**（上游一致性要求）。
+   *
+   * dsh 映射：`interrupt` → `agent.cancel({kind:'user'})`（默认清空 inbox，因此 `cancelQueued` 是 no-op）；
+   * `finalizeCard` → 把运行卡收成 stopped 并结算；`notify` → 给该会话的 chat 发中断提示卡。
+   */
+  const recovery = createSessionRecovery({
+    log,
+    resolveLink: async (sessionId) => (await sessionMap()).resolveBySession(sessionId),
+    interrupt: async (sessionId) => {
+      const agent = await port.resolveAgent(sessionId);
+      if (!agent) throw new Error("会话没有存活的 agent");
+      await agent.cancel({ kind: "user" });
+    },
+    // dsh 的 cancel() 默认清空 inbox；没有 opencode 那种独立的 park 队列取消 API。
+    cancelQueued: async () => ({ cancelled: 0 }),
+    markEnded: (sessionId) => tracker.markEnded(sessionId),
+    finalizeCard: (sessionId, text) => {
+      const card = runCards.get(sessionId);
+      if (!card) return;
+      card.handle({ type: "turn-end", outcome: "stopped", reason: text });
+      void settleRunCard(sessionId);
+    },
+    notify: async (sessionId, reason, ok) => {
+      const link = await (await sessionMap()).resolveBySession(sessionId);
+      if (!link) return;
+      await sendNotice(link.chatId, `⏹ 已中断（${reason}）${ok ? "" : "，但过程有异常（见日志）"}`, "orange");
+    },
+  });
+
+  /**
    * 命令分发（上游 `index.ts:849-852` 的"命令优先拦截"落点）。
    *
    * 顺序与上游一致：解析 → 话题内白名单校验（被禁则引导回主聊天流）→ 按 scope 执行。
@@ -332,13 +364,12 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
           await sendNotice(message.chatId, "当前聊天还没有绑定会话。", "grey");
           return;
         }
-        const agent = await port.resolveAgent(target);
-        if (!agent) {
-          await sendNotice(message.chatId, "会话没有存活的 agent，无法中断。", "grey");
-          return;
-        }
-        await agent.cancel({ kind: "user" });
-        await sendNotice(message.chatId, `已请求中断会话 \`${target}\`。`, "orange");
+        const result = await recovery.interrupt(target, "/stop");
+        await sendNotice(
+          message.chatId,
+          `已请求中断会话 \`${target}\`（${result.ok ? "成功" : "有异常，见日志"}）。`,
+          result.ok ? "orange" : "red",
+        );
         return;
       }
       default:
@@ -440,11 +471,11 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
     if (!stopGuard.consume(verified.claims.n, config.approvalTtlMs)) {
       return { toast: { type: "warning", content: "该操作已被处理" } };
     }
-    const agent = await port.resolveAgent(verified.claims.s);
-    if (!agent) return { toast: { type: "warning", content: "会话已结束" } };
-    await agent.cancel({ kind: "user" });
-    log.info("已按卡片强停会话", { sessionId: verified.claims.s });
-    return { toast: { type: "success", content: "已请求中断" } };
+    const result = await recovery.interrupt(verified.claims.s, "强制停止");
+    log.info("已按卡片强停会话", { sessionId: verified.claims.s, ok: result.ok });
+    return result.ok
+      ? { toast: { type: "success", content: "已请求中断" } }
+      : { toast: { type: "error", content: "中断过程有异常，见日志" } };
   });
 
   /** 入站主流程（与上游 `handleMessage` 同序）。 */
@@ -620,9 +651,25 @@ export function apply(ctx: Context, raw: ConfigShape = {}): void {
       questionTtlMs: config.questionTtlMs,
     });
     supervisor.start();
+    // 看门狗：陈旧执行 → 真实中断（等待用户点击的审批/提问算「合法等待」，不误杀）。
+    const stopWatchdog =
+      config.staleExecutionMs > 0
+        ? startWatchdog({
+            log,
+            staleExecutionMs: config.staleExecutionMs,
+            staleExecutions: () =>
+              tracker.stale(config.staleExecutionMs, Date.now(), (sessionId) => {
+                return approvals.hasPendingFor(sessionId) || questions.hasPendingFor(sessionId);
+              }),
+            // dsh 没有 opencode 的 park 队列；排队由宿主 inbox 管理，取消已由 interrupt 覆盖。
+            staleQueued: () => [],
+            recover: (sessionId, reason) => recovery.recover(sessionId, reason),
+          })
+        : () => {};
     return async () => {
       // 先置位再拆：清理期间到达的事件/消息一律短路（卸载清理是并发执行的）。
       disposed = true;
+      stopWatchdog();
       approvals.dispose();
       questions.dispose();
       await supervisor.stop();

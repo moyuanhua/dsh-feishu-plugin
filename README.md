@@ -34,7 +34,8 @@
 | 建会话表单 / 会话列表卡 / 恢复摘要 | `setup-wizard`、`session-list`、`resume-summary` 等 | — | — | ⬜ |
 | 审批（策略 + 卡片 + 桥） | `permission.ts`、`perm-presets.ts`、审批卡构建器 | `bridge/permission.ts`、`bridge/perm-presets.ts`、`bridge/approval.ts`、审批卡构建器 | `test/permission.test.ts`（17）、`test/perm-presets.test.ts`（9）、`test/approval.test.ts`（13） | ✅ |
 | **提问（表单卡 + 文本作答）** | `forms.ts`、`form-relay.ts` | `bridge/forms.ts`、`bridge/questions.ts` | `test/forms.test.ts`（12）、`test/questions.test.ts`（17） | ✅ |
-| 看门狗 / 附件 / 建会话表单 / 会话列表卡 | `watchdog`、`attachments`、`setup-wizard`、`session-list` | — | — | ⬜ |
+| **看门狗 + 恢复例程** | `watchdog.ts`、`session-recovery.ts` | `bridge/watchdog.ts`、`bridge/session-recovery.ts` | `test/watchdog.test.ts`（4）、`test/session-recovery.test.ts`（5） | ✅ |
+| 附件 / 建会话表单 / 会话列表卡 | `attachments`、`setup-wizard`、`session-list` | — | — | ⬜ |
 
 **产品语义（来自上游，已落地）**：
 - 主聊天流（无 `thread_id` 的普通文本）= **管理台**，普通文本**不进入任何会话**，回管理台提示卡；

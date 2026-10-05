@@ -363,6 +363,17 @@ export class ApprovalBridge {
   get pendingCount(): number {
     return this.pending.size;
   }
+
+  /**
+   * 该会话是否有未决审批。
+   * 看门狗用它区分「卡死」与「合法等待」：等待用户点击期间不该被判定为陈旧执行。
+   */
+  hasPendingFor(sessionId: string): boolean {
+    for (const pending of this.pending.values()) {
+      if (pending.sessionId === sessionId) return true;
+    }
+    return false;
+  }
 }
 
 /** 供 index.ts 复用的回答词表。 */

@@ -238,6 +238,17 @@ describe("QuestionBridge.handle（认领与委托）", () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  test("hasPendingFor：待答期间该会话被视为「合法等待」", async () => {
+    const h = harness();
+    const promise = h.bridge.handle("ses_1", request(), h.next);
+    await flush();
+    expect(h.bridge.hasPendingFor("ses_1")).toBe(true);
+    expect(h.bridge.hasPendingFor("ses_2")).toBe(false);
+    await h.bridge.handleCardAction(click("ou_owner", { f: "fq_test", k: "q0", v: "新开一轮" }));
+    await promise;
+    expect(h.bridge.hasPendingFor("ses_1")).toBe(false);
+  });
+
   test("dispose 收敛待答并交回宿主", async () => {
     const h = harness();
     const promise = h.bridge.handle("ses_1", request(), h.next);

@@ -328,6 +328,14 @@ export class QuestionBridge {
   get pendingCount(): number {
     return this.pending.size;
   }
+
+  /** 该会话是否有待答提问（看门狗的「合法等待」判据，与审批同理）。 */
+  hasPendingFor(sessionId: string): boolean {
+    for (const entry of this.pending.values()) {
+      if (entry.sessionId === sessionId) return true;
+    }
+    return false;
+  }
 }
 
 /** 该表单是否只剩一个未答字段（此时聊天文本可以唯一对应到它）。 */

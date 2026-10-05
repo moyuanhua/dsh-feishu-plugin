@@ -291,6 +291,18 @@ describe("ApprovalBridge.handleCardAction（点击校验序）", () => {
     expect(h.patched).toHaveLength(1);
   });
 
+  test("hasPendingFor：等待点击期间该会话被视为「合法等待」", async () => {
+    const h = harness();
+    expect(h.bridge.hasPendingFor("ses_1")).toBe(false);
+    const promise = h.bridge.handle("ses_1", { toolName: "bash", callId: "c1" }, h.next);
+    await flush();
+    expect(h.bridge.hasPendingFor("ses_1")).toBe(true);
+    expect(h.bridge.hasPendingFor("ses_2")).toBe(false);
+    await h.bridge.handleCardAction(click("ou_owner", { t: approvalToken("c1"), d: "once" }));
+    expect(await promise).toBe("allowed-once");
+    expect(h.bridge.hasPendingFor("ses_1")).toBe(false);
+  });
+
   test("dispose 把待批全部收敛为 cancelled", async () => {
     const h = harness();
     const promise = h.bridge.handle("ses_1", { toolName: "bash", callId: "c1" }, h.next);
