@@ -4,7 +4,7 @@
 
 设计目标与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 对齐，但宿主换成 dsh 的 Cordis 插件体系，并坚持**最小权限**：只申请 `im:message.p2p_msg:readonly` + `im:message:send_as_bot` 两个 scope，不申请任何群权限 —— 机器人在平台层面就收不到群消息。
 
-> 状态：**M2（连接层）**。配置层、卡片 token 安全内核、飞书长连接 supervisor、入站决策与单人白名单已完成并有 39 个单测；已在真实 dsh 宿主里验证过"加载 + 连接失败退避"两条路径（见下"开发期验证"）。尚未接线会话投递（M3）。
+> 状态：**M3b（会话桥 + 运行卡）**。已完成：配置层、token 内核、长连接 supervisor、入站决策、单人 owner 绑定、话题↔会话映射（storageDomain）、会话创建与投递（followup/steer）、**运行卡（流式回显 + 工具块 + 强停按钮）**、`/help` `/status` `/stop`。共 **154 个单测 / 12 个文件全绿**；已在真实 dsh 宿主 + 真实飞书应用上验证过连接、入站决策与投递路径。审批卡/提问卡/附件为 M4。
 
 ## 为什么单独开一个仓库
 
@@ -50,10 +50,33 @@ dsh 接缝（M2 起接入，均已确认存在）：
 ## 里程碑
 
 - **M1 骨架** ✅ 工具链、bundle patch、配置 schema、token 内核 + 单测
-- **M2 连接** ✅ `@larksuite/channel` 长连接 supervisor（世代化 + 有界指数退避 + dispose 收敛）、入站决策纯函数（白名单 / 群开关 / bot 回环 / 空消息 / 命令识别）、单人 owner 绑定、结构化脱敏日志
-- **M3 会话桥**：话题↔会话映射（`ctx.storageDomain`）、投递（`followup`/`steer`）、流式回显卡片、`/new` `/sessions` `/resume` `/stop`
-- **M4 决策桥**：审批卡（四档 gate + 白名单 + token 校验）、提问卡、强停、看门狗、附件
+- **M2 连接** ✅ `@larksuite/channel` 长连接 supervisor（世代化 + 有界指数退避 + dispose 收敛）、入站决策纯函数、单人 owner 绑定、结构化脱敏日志
+- **M3a 会话桥** ✅ 话题↔会话映射（`ctx.storageDomain` 领域表 `feishu_topics`）、会话创建、投递（`followup`/`steer`）
+- **M3b 运行卡** ✅ 运行卡控制器（流式正文 + 工具块 + 强停按钮，700ms 节流遵守飞书 10 次/秒限制）、`/help` `/status` `/stop`、卡片回调验签 + 防重放
+- **M4 决策桥**：审批卡（四档 gate + 白名单 + token 校验）、提问卡、看门狗、附件
 - **M5 发布**：扫码 onboarding、locale/icon、peer 区间对齐、兼容性矩阵与文档
+
+## 官方文档核对（`docs/user/develop/`）
+
+实现前逐篇读过官方开发文档（`basic/` 四篇 + `framework/` 三篇），并按其规则修正了三处：
+
+| 文档规则 | 出处 | 落地 |
+|---|---|---|
+| 可调参数必须做成配置字段（"能否在 `cordis.yml` 里改这个值而不改代码？"） | `basic/config.zh.md:78-92` | 退避参数、卡片节流/上限、标题长度全部进 `Config` |
+| 默认值写在 schema；非法配置在**加载时**响亮失败 | `basic/config.zh.md:9-45,94-96` | 区间约束（`min/max`）进 schemastery，`resolveConfig` 只做派生 |
+| 与宿主共享实例的 dsh 包必须**同时**在 `peerDependencies` 与 `devDependencies` | `basic/publish.zh.md:103` | 已补 4 个 dsh peer（`^0.2.0-rc.2`，带预发布标签才过兼容闸门） |
+| 卸载清理逆序但异步并发；顺序相关的清理放同一个 `ctx.effect` | `framework/index.zh.md:63` | 拆除标志 `disposed` + 单个 effect 内串行 stop |
+
+**一条与文档不符的实测**：`framework/service.zh.md:95-99` 写"可选依赖：不写 inject，用 `ctx.get()` 查询"。但在 0.2.0-rc.2 的真实宿主里探针实测：
+
+```
+ctx.get('agents')  = object      ← 已在 inject 里的服务
+ctx.get('tools')   = undefined
+ctx.get('sessionTitle') = undefined   ← 未 inject 的可选服务拿不到
+ctx.sessionTitle   = ✗ 抛 cannot get property "sessionTitle" without inject
+```
+
+所以本插件的可选服务统一用 `ctx.inject([...], sub => …)` 子级（`src/dsh/port.ts` 的 `sessionTitle` 就是这样），这也是 M3a 首次真实投递失败的原因。
 
 ## 开发期验证（已完成）
 

@@ -15,6 +15,7 @@
 import { createLarkChannel } from "@larksuite/channel";
 import type {
   CardActionEvent,
+  CardActionResponse,
   LarkChannel,
   LarkChannelOptions,
   NormalizedMessage,
@@ -52,7 +53,10 @@ export interface FeishuChannel {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   onMessage(handler: (message: NormalizedMessage) => void | Promise<void>): () => void;
-  onCardAction(handler: (event: CardActionEvent) => void | Promise<void>): () => void;
+  /** 卡片回调：返回值会原样回给飞书（toast / 就地更新卡片），见 SDK 的 CardActionResponse。 */
+  onCardAction(
+    handler: (event: CardActionEvent) => void | CardActionResponse | Promise<void | CardActionResponse>,
+  ): () => void;
   onReject(handler: (event: RejectEvent) => void): () => void;
   onReconnecting(handler: () => void): () => void;
   onReconnected(handler: () => void): () => void;

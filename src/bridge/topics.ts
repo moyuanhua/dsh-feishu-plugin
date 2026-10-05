@@ -137,11 +137,12 @@ export function topicKey(input: { readonly chatId: string; readonly threadId?: s
   return input.threadId ? `thread:${input.threadId}` : `chat:${input.chatId}`;
 }
 
-const TITLE_MAX_CHARS = 20;
+const DEFAULT_TITLE_MAX_CHARS = 20;
 
 /** 从首条消息生成话题标题：压缩空白 + 截断；空消息回退为「飞书会话」。 */
-export function topicTitle(text: string): string {
+export function topicTitle(text: string, maxChars: number = DEFAULT_TITLE_MAX_CHARS): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   if (!collapsed) return "飞书会话";
-  return collapsed.length <= TITLE_MAX_CHARS ? collapsed : `${collapsed.slice(0, TITLE_MAX_CHARS)}…`;
+  const limit = Math.max(1, Math.trunc(maxChars));
+  return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit)}…`;
 }
