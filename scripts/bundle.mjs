@@ -24,6 +24,17 @@ import { spawnSync } from "node:child_process";
 
 const ENTRIES = ["src/index.ts", "src/cli.ts"];
 
+/**
+ * 客户端（浏览器半侧）的打包参数。
+ *
+ * 它和宿主半侧**完全不同**：
+ * - 外部化 `react` 与 `@deepseek-ai/dsh-client-*` —— 这些由宿主的客户端模块系统在
+ *   浏览器里提供，打进来会出现两份 React；
+ * - 产物必须是宿主自己的模块格式，不是 ESM（见下面的 `CLIENT_ENVELOPE`）。
+ */
+const CLIENT_ENTRY = "src/client/index.ts";
+const CLIENT_EXTERNAL = ["react", "react/jsx-runtime", "react-dom", "@deepseek-ai/dsh-client-*"];
+
 await build({
   entryPoints: ENTRIES,
   outdir: "lib",
@@ -66,6 +77,52 @@ await build({
   },
 });
 
+/**
+ * 客户端 bundle 的信封。
+ *
+ * 官方客户端产物（如 `dsh-client-ui-settings-agent-loop/lib/client.js`）长这样：
+ *
+ *     window.__ModuleLoader__.load({
+ *       id: "<包名>",
+ *       factory: (require) => {
+ *         var module = { exports: {} }; var exports = module.exports;
+ *         ... 代码 ...
+ *         exports.inject = inject; exports.apply = apply;
+ *         return module.exports;
+ *       }
+ *     });
+ *
+ * 所以这里用 esbuild 出 **CJS**（`module`/`exports` 由工厂自己提供），再套上信封。
+ * 出 ESM 是不行的：宿主的加载器不认 `import`/`export`。
+ */
+const CLIENT_ENVELOPE_PREFIX = (id) => `window.__ModuleLoader__.load({
+\tid: ${JSON.stringify(id)},
+\tfactory: (require) => {
+\t\tvar module = { exports: {} };
+\t\tvar exports = module.exports;
+\t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+`;
+const CLIENT_ENVELOPE_SUFFIX = `\t\treturn module.exports;
+\t}
+});
+`;
+
+await build({
+  entryPoints: [CLIENT_ENTRY],
+  outfile: "lib/client.js",
+  bundle: true,
+  platform: "browser",
+  format: "cjs",
+  target: "es2022",
+  external: CLIENT_EXTERNAL,
+  sourcemap: false,
+  minify: false,
+  legalComments: "none",
+  logLevel: "warning",
+  banner: { js: CLIENT_ENVELOPE_PREFIX("dsh-feishu-plugin") },
+  footer: { js: CLIENT_ENVELOPE_SUFFIX },
+});
+
 // esbuild 会保留入口的 shebang，但不会带上可执行位。
 chmodSync("lib/cli.js", 0o755);
 
@@ -93,7 +150,30 @@ if (failed) {
   process.exit(1);
 }
 
-for (const entry of ["lib/index.js", "lib/cli.js"]) {
+// 客户端自检：产物必须是信封格式，且只 require 外部化的包。
+{
+  const source = readFileSync("lib/client.js", "utf8");
+  const problems = [];
+  if (!source.startsWith("window.__ModuleLoader__.load(")) problems.push("缺少 window.__ModuleLoader__.load 信封");
+  // esbuild 的 CJS 产物是 `__export(index_exports, {…}); module.exports = __toCommonJS(…)`，
+  // 而不是手写 `exports.x = …` —— 两种都合法，因为信封返回的是 module.exports。
+  if (!/module\.exports\s*=/.test(source)) problems.push("没有给 module.exports 赋值");
+  for (const name of ["apply", "inject"]) {
+    if (!new RegExp(`(?:^|[\\s{,])${name}\\s*:`).test(source)) problems.push(`导出表里没有 ${name}`);
+  }
+  for (const match of source.matchAll(/require\("([^"]+)"\)/g)) {
+    const spec = match[1];
+    if (spec.startsWith("@deepseek-ai/dsh-client-") || spec === "react" || spec.startsWith("react/")) continue;
+    problems.push(`require 了未外部化的包："${spec}"`);
+  }
+  if (problems.length > 0) {
+    console.error("✗ lib/client.js 不合法：");
+    for (const p of problems) console.error(`  - ${p}`);
+    process.exit(1);
+  }
+}
+
+for (const entry of ["lib/index.js", "lib/cli.js", "lib/client.js"]) {
   const bytes = readFileSync(entry).byteLength;
   console.log(`  ${entry}  ${(bytes / 1024).toFixed(0)} kB`);
 }

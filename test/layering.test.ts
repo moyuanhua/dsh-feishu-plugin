@@ -15,8 +15,14 @@ import { describe, expect, test } from "vitest";
 import { globSync } from "node:fs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-/** 允许直接依赖宿主包的地方：宿主适配层 + 装配层。 */
-const HOST_AWARE = ["src/dsh/", "src/index.ts"];
+/**
+ * 允许直接依赖宿主包的地方：宿主适配层 + 装配层 + **浏览器半侧**。
+ *
+ * 最后一类是新加的：`src/client/` 是插件的浏览器半侧，它天然要 `import`
+ * `@deepseek-ai/dsh-client-*`（slots / locale / configForms 都在那边）。
+ * 它不参与 Node 侧单测，所以不受"核心逻辑必须宿主无关"的约束。
+ */
+const HOST_AWARE = ["src/dsh/", "src/index.ts", "src/client/"];
 /** 这些目录/文件必须保持宿主无关。 */
 const MUST_STAY_PURE = ["src/bridge/", "src/feishu/", "src/security/", "src/utils/", "src/config.ts", "src/types.ts"];
 
@@ -77,6 +83,22 @@ describe("分层不变量：宿主无关层不得依赖 dsh 运行时", () => {
     expect(readFileSync(join(ROOT, "src/bridge/questions.ts"), "utf8")).toContain(
       'import type {',
     );
+  });
+
+  test("浏览器半侧只依赖客户端包，不碰宿主的 Node 侧包", () => {
+    // `src/client/**` 是浏览器半侧，打出来的 bundle 由宿主的客户端模块系统加载。
+    // 一旦 import 了宿主 Node 侧包（dsh-agent / dsh-llm / dsh-session …），
+    // 浏览器里加载会直接失败 —— 而这类错误在 Node 侧单测里看不出来。
+    const CLIENT_ALLOWED = /^@deepseek-ai\/dsh-client-/;
+    const violations = globSync("src/client/**/*.ts", { cwd: ROOT })
+      .map((p) => p.replace(/\\/g, "/"))
+      .flatMap((file) => runtimeDependencies(file))
+      .filter((dep) => isHostPackage(dep.specifier) && !CLIENT_ALLOWED.test(dep.specifier));
+
+    expect(
+      violations.map((v) => `${v.file} → ${v.specifier}`),
+      "浏览器半侧只能依赖 @deepseek-ai/dsh-client-*（以及 react）；宿主 Node 侧包在浏览器里不存在",
+    ).toEqual([]);
   });
 
   test("宿主依赖确实只集中在 src/dsh 与装配层（正向确认规则不是空转）", () => {
