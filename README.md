@@ -288,6 +288,7 @@ pnpm run build
 | [docs/REDESIGN.md](docs/REDESIGN.md) | 分层与宿主接缝：哪些归 dsh、哪些归插件，终态契约 |
 | [docs/DESIGN-SESSION-MANAGEMENT.md](docs/DESIGN-SESSION-MANAGEMENT.md) | 会话管理面（管理台 / 话题 / AI 引导 / 列表 / 根卡状态）的设计与实现记录 |
 | [docs/CONFIG-UI-AND-DISTRIBUTION.md](docs/CONFIG-UI-AND-DISTRIBUTION.md) | 配套配置界面与分发方案（提案） |
+| [docs/PUBLISHING.md](docs/PUBLISHING.md) | 发布 runbook（首次 bootstrap / 后续打 tag / DSH 版本兼容） |
 | [NOTICE.md](NOTICE.md) | 与 `opencode-feishu-plugin` 的来源与授权说明 |
 
 ## 许可

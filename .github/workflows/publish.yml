@@ -1,0 +1,57 @@
+name: Publish to npm
+
+# 后续版本的发布方式：打 tag 即发布。
+#
+#   git tag v0.1.1 && git push --follow-tags
+#
+# 走 npm 的 **Trusted Publishing（OIDC）**，不需要任何 secret、自动带 provenance 签名。
+# 前提（只在 npmjs.com 上配一次，见 docs/PUBLISHING.md）：
+#   npmjs.com → 包 → Settings → Trusted Publisher
+#     owner=moyuanhua  repo=dsh-feishu-plugin  workflow=publish.yml
+#
+# 首次发布不能用这个 —— Trusted Publisher 只能在**包已存在之后**配置，
+# 所以 0.1.0 走 publish-bootstrap.yml。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 也支持在 Actions 页面手动触发
+
+permissions:
+  contents: read
+  id-token: write # OIDC：Trusted Publishing 必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest # 必须是 GitHub 托管 runner（自托管不支持 OIDC）
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      # 注意：这里**故意不设 registry-url**。
+      # setup-node 设了 registry-url 会把 GITHUB_TOKEN 注入成 NODE_AUTH_TOKEN，
+      # 那会让 npm 走传统 token 认证、跳过 OIDC 交换，直接 ENEEDAUTH。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # trusted publishing 需要 npm >= 11.5.1；Node 24 自带的未必够新。
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify (typecheck + build + test)
+        run: |
+          pnpm run typecheck
+          pnpm run build
+          pnpm test
+
+      # prepublishOnly 会再跑一遍 clean + typecheck + build + test，这里不重复。
+      - name: Publish (OIDC trusted publishing + provenance)
+        run: npm publish --access public --provenance
