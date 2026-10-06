@@ -10,46 +10,11 @@
 
 ---
 
-## 首次发布（0.1.0）—— 必须手动一次
+## 首次发布已完成（0.1.0，2026-10-06）
 
-npm 的 **Trusted Publisher（OIDC）只能在包已存在之后配置**，所以第一个版本走 token。三步：
-
-### 1. 生成一个最小权限的 npm token
-
-npmjs.com → **Access Tokens** → Generate New Token → **Granular Access Token**：
-
-- 权限：**只勾 `dsh-feishu-plugin`** 的 **Read and write**（不要给全账号权限）；
-- 有效期：短期即可（发完就撤销）。
-
-### 2. 存进 GitHub 仓库
-
-GitHub → 仓库 **Settings → Secrets and variables → Actions → New repository secret**：
-
-```
-Name:  NPM_TOKEN
-Value: <上一步的 token>
-```
-
-> 我（AI）**没有**创建仓库 secret 的权限，这一步只能你来做。
-
-### 3. 手动跑一次 workflow
-
-GitHub → **Actions → "Publish to npm (bootstrap via NPM_TOKEN)" → Run workflow**。
-
-它会在发布前自己跑一遍 `typecheck + build + test`，全绿才 `npm publish --access public --provenance`。
-
-### 4. 发完之后立刻做的两件事
-
-1. **配 Trusted Publisher**：npmjs.com → 包 `dsh-feishu-plugin` → **Settings → Publishing access → Trusted Publisher**：
-   ```
-   owner:    moyuanhua
-   repo:     dsh-feishu-plugin
-   workflow: publish.yml
-   ```
-2. **删掉 `.github/workflows/publish-bootstrap.yml`**，并在 npmjs.com 上开启
-   **Require 2FA and disallow tokens**，然后撤销第 1 步那个 token。
-
----
+0.1.0 走了一次性 token 手动发布（npm 的 Trusted Publisher 只能在包已存在后配置）。
+**此后不再需要 token**：`publish-bootstrap.yml` 已删除，npmjs.com 上也应开启
+「Require 2FA and disallow tokens」并撤销当时那个 granular token。
 
 ## 后续发布（0.1.1 起）—— 打 tag 即可
 
