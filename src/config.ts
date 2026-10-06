@@ -118,7 +118,12 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   appId: z.string().description("飞书 App ID（cli_…）"),
-  appSecret: z.string().description("飞书 App Secret（永不写入日志）"),
+  /**
+   * `role("secret")` 不能省：Config 界面会据此**只显示"是否已设置"而不回显值**。
+   * 少了它，打开插件配置页就能看到明文 App Secret。
+   * （与官方 dsh-web-search-deepseek 对 apiKey 的处理一致。）
+   */
+  appSecret: z.string().role("secret").description("飞书 App Secret（永不写入日志）"),
   appSecretRef: z.string().role("credential-ref").description("凭据名，经 ctx.credentials 解析"),
   domain: z.string().default("https://open.feishu.cn").description("开放平台域名"),
   cwd: z.string().description("新会话默认工作目录；缺省为 allowedRoots 第一项（不回落到进程 cwd）"),
