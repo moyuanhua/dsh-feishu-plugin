@@ -1,293 +1,279 @@
 # dsh-feishu-plugin
 
-把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）接进飞书 / Lark：**一个飞书话题 = 一个 dsh 会话，权限审批直接在飞书卡片上点按钮。**
+**把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）接进飞书 / Lark。**
+在飞书里开一个话题就能派活给 dsh，代码跑完的结果、要你点头的权限审批、需要你补充的信息，
+全部以卡片形式回到飞书里 —— **不需要公网地址，不需要服务器**。
 
-设计目标与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 对齐，但宿主换成 dsh 的 Cordis 插件体系，并坚持**最小权限**：只申请 `im:message.p2p_msg:readonly` + `im:message:send_as_bot` 两个 scope，不申请任何群权限 —— 机器人在平台层面就收不到群消息。
+```
+你（飞书主聊天流）：帮我看下 wps 那个仓库的编译报错
+      ↓  AI 识别意图，自动把目录/模型/权限填好
+📝 新建会话（目录、模型、权限都可改）
+      ↓  点「创建会话」
+✅ 会话已创建 —— 这张卡自己变成话题根卡
+      ↓  在话题里继续说话
+⏳ 运行卡（流式输出 + 工具调用 + 强制停止）
+🔐 权限请求（点「允许一次」就继续）
+✅ 完成
+```
 
-> 状态：**架构已重做 + 会话管理面对齐上游**。内部逻辑不再是 opencode 的逐层镜像，而是面向 dsh 原生接缝重新设计
-> —— 见 [docs/REDESIGN.md](docs/REDESIGN.md) 与 [docs/DESIGN-SESSION-MANAGEMENT.md](docs/DESIGN-SESSION-MANAGEMENT.md)。
-> **交互逻辑（话题↔会话、运行卡、审批、提问、命令、菜单、AI 引导建会话、会话列表）对齐上游**。
->
-> 规模：`src/` 43 个 TS 文件 / 9,315 行；`test/` 38 个文件 / 6,692 行，**602 个单测全绿**，
-> 覆盖率 **97.98% statements**（见 `vitest.config.ts` 的排除说明），`tsc --noEmit` 干净。
->
-> 真实宿主上已验证：插件加载 → 飞书长连接 → `agentDefaultModel` 接入 → 建会话带模型后跑完整轮
-> （`turn/end = completed`）；`ctx.sessionQuery.listSessions()` 能列出全量会话、`readTitleSnapshots()`
-> 能取到日志折叠标题，且 `searchSessions` 如文档所言失败（`SESSION_QUERY_SEARCH_DISABLED`）
-> —— 这正是"删掉会话清单镜像"的依据。证据见 [docs/REDESIGN.md §6](docs/REDESIGN.md)。
+> 交互设计与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 一致，宿主换成 dsh 的 Cordis 插件体系。
 
-## 设计基准：为什么重做
+---
 
-早期路线是"**先把上游测试搬来当规格，再让实现通过**"——逐层搬 `routing` / `delivery` / `session-map` / `commands`。
-它保证了行为等价，但代价是插件内部结构变成了 opencode 内部结构的一份镜像，于是在**两个宿主语义不同的地方必然失真**，
-而且失真不报错：它静默退化成一个看起来能用的错误行为。
+## 它能做什么
 
-上一轮实测出的 6 个缺陷全部属于这一类（建会话丢模型、目录回落 `process.cwd()`、`error` 被吞成 ✅、
-失败原因丢弃、卡片正文重复标题、`/help` 列未实现命令）。因此现在改为：
-**dsh 已经拥有的一切只能读、不能自己算**，插件只保留「飞书表现层」与「两个模型之间的翻译层」。
-
-完整的所有权划分、终态契约与新分层见 [docs/REDESIGN.md](docs/REDESIGN.md)。
-
-## 历史：逐层搬运上游逻辑（**已废弃的路线**）
-
-以下表格记录的是旧路线及其完成度，保留作为对照与出处追溯；**新代码不再按它组织**。
-（`src/bridge/` 仍保留了同名模块，但职责已按 [docs/REDESIGN.md §5](docs/REDESIGN.md) 重划。）
-
-| 层 | 上游文件 | 本仓库 | 上游规格测试 | 状态 |
-|---|---|---|---|---|
-| 路由 | `src/feishu/routing.ts` | `src/bridge/routing.ts` | `test/routing.test.ts`（8 用例） | ✅ |
-| 会话映射 | `src/feishu/session-map.ts`（582 行，5 层 key） | `src/bridge/session-map.ts` | `test/session-map.test.ts`（24 用例） | ✅ |
-| 命令矩阵 | `src/feishu/commands.ts`（16 命令 + 双 scope） | `src/bridge/commands.ts` | `test/commands.test.ts` | ✅ |
-| 投递决策 | `src/feishu/delivery.ts` | `src/bridge/delivery.ts` | `test/delivery.test.ts`（10 用例） | ✅ |
-| 运行卡 | `run-state/run-renderer/cards/card-limits` | 同名（`bridge/`、`feishu/`） | `test/run-*.test.ts`、`cards/card-limits`（79 用例） | ✅ |
-| token / 白名单 / 日志 | `security/token`、`security/allowlist`、`logger` | 同名 | 逐条搬运 | ✅ |
-| 入站主流程接线 | `src/index.ts:816-918` `handleMessage` | `src/index.ts` | 由 `routing`/`session-map` 规格覆盖 | ✅ |
-| 建会话表单 / 会话列表卡 / 恢复摘要 | `setup-wizard`、`session-list`、`resume-summary` 等 | — | — | ⬜ |
-| 审批（策略 + 卡片 + 桥） | `permission.ts`、`perm-presets.ts`、审批卡构建器 | `bridge/permission.ts`、`bridge/perm-presets.ts`、`bridge/approval.ts`、审批卡构建器 | `test/permission.test.ts`（17）、`test/perm-presets.test.ts`（9）、`test/approval.test.ts`（13） | ✅ |
-| **提问（表单卡 + 文本作答）** | `forms.ts`、`form-relay.ts` | `bridge/forms.ts`、`bridge/questions.ts` | `test/forms.test.ts`（12）、`test/questions.test.ts`（17） | ✅ |
-| **看门狗 + 恢复例程** | `watchdog.ts`、`session-recovery.ts` | `bridge/watchdog.ts`、`bridge/session-recovery.ts` | `test/watchdog.test.ts`（4）、`test/session-recovery.test.ts`（5） | ✅ |
-| **附件（图片/文件）** | `attachments.ts` 纯语义 + dsh 附件服务 | `bridge/attachments.ts`、`dsh/port.ts` | `test/attachments.test.ts`（14） | ✅ |
-| 建会话表单 / 会话列表卡 / 恢复摘要 | `setup-wizard`、`session-list`、`resume-summary` | — | — | ⬜ |
-
-**产品语义（来自上游，已落地）**：
-- 主聊天流（无 `thread_id` 的普通文本）= **管理台**，普通文本**不进入任何会话**，回管理台提示卡；
-- 话题（回复形成 thread / 回复根卡带 `root_id`）→ 路由到会话；
-- 命令**先于路由**拦截，绝不把 `/xxx` 当 prompt；
-- 忙时投递：空闲 → `steer`；忙时按 `busyDelivery`（默认 `steer` 插队 / `queue` 排队）；
-- 话题内命令有白名单（`/new` `/sessions` `/use` `/resume` `/dir` `/cancel` `/form` 被禁，引导回主聊天流）。
-
-**DM 场景怎么用**（没有 quickNew 时的上游行为）：`/new` 建会话并发出"根卡" → **回复那张卡**开始对话
-（回复只带 `root_id`，正是 `decideRoute` 的 root 兜底分支）；或把 `threadRouting` 设为 `false` 走"普通文本进当前会话"的回退模式。
-
-## 结论：为什么单独开仓库（实测数据）
-
-目标里要求判断"在原项目上抽象共用内核 vs 单独开新项目"。搬完 17 个模块后的**实测**：
-
-| 类别 | 文件数 | 行数 | 占比 | 说明 |
-|---|---:|---:|---:|---|
-| **搬运行**（近乎逐行） | 17 | 3,345 | **51%** | 路由 / 会话映射 / 命令矩阵 / 投递决策 / 权限策略与预设 / 表单 / 看门狗 / 恢复例程 / 运行态与渲染 / 卡片与守卫 / token / 白名单 / 日志 / TTL Map |
-| **宿主适配新增** | 15 | 3,226 | **49%** | `index.ts` 入站主流程、审批桥与提问桥（waterfall 变体）、出站运行卡、附件入库、`dsh/` 适配层（agents / storageDomain / attachments / MessageSource）、配置、连接 supervisor、安装 CLI |
-
-结论与依据：
-
-1. **上游有一半代码是"纯逻辑"，且这部分几乎零改动可搬** —— 这是新开仓库的最大收益，也是"抽象"唯一有价值的部分；
-2. **另一半是宿主语义**（opencode 是 `permission.evaluate` hook + `session.prompt {delivery}` + `session.form.reply` + location 保活；dsh 是 `approval/request` / `user-questions/request` waterfall + `agent.followup/steer` + `ctx.storageDomain` + 无 location 回收）。这部分**不可能共用**：适配层只能各写一份；
-3. 因此若"在上游项目上抽象共用内核"，等于要在**一个正在迭代的 15k 行单宿主插件**里先做重构，去服务一个尚未验证的第二宿主 —— 而实测证明共用的上限就是那 51%；
-4. 正确顺序是**先分离、后抽象**：本仓库已经把 51% 稳定成"可搬运层"（其中 `security/`、`utils/`、`bridge/run-*`、`bridge/forms.ts`、`bridge/permission.ts` 更是零宿主依赖），等 dsh 版跑稳，再把这几块抽成独立 npm 包**反向**提供给 opencode 侧。
-
-## 验证状态（截至本轮）
-
-| 验证项 | 证据 |
+| 能力 | 说明 |
 |---|---|
-| 单元/规格测试 | **24 文件 / 326 用例全绿**（其中 12 个文件是上游规格逐条搬运） |
-| typecheck / build | 通过 |
-| 真实宿主加载（开发叠加层） | `已加载` → SDK 初始化 → `飞书长连接已建立`（多轮） |
-| **生产安装路径** | `pnpm pack` → tarball（164 条目 / 0 node_modules）→ `dsh plugin --profile feishu add` → `bundles` 追加 → `--dump-config` 出现 `# == dsh-feishu-plugin` 层 → 启动并建立长连接 |
-| **peer 解析** | 该 profile 的 `node_modules/@deepseek-ai/` 里只有 cosmokit+schemastery，插件仍能启动 → 7 个 `dsh-*` 均从运行时安装目录解析 |
-| 真实飞书入站 | 收到消息、owner 绑定、决策、投递（M3a 阶段实测） |
-| 安装准备 CLI | 占位符 → `false`（已写入）→ 再跑幂等（无需修改）；`node_modules/.bin` 符号链接调用正常 |
-| **飞书端到端闭环（建会话 → 运行卡 → 审批卡 → 结果）** | ⬜ **待人工验证**（需要你在飞书里发消息与点击） |
+| **一个飞书话题 = 一个 dsh 会话** | 话题里发消息就是给这个会话派活；话题之间互不干扰，各自独立上下文 |
+| **AI 引导建会话** | 在主聊天流随口说一句要干什么，AI 判断意图、匹配目录与模型、预填表单，你确认即可 |
+| **会话列表** | `/sessions` 列出**全部** dsh 会话（包括你在桌面 App 里建的），带相对时间、目录、是否已绑话题，可翻页、可直接进入 |
+| **流式运行卡** | 模型输出、工具调用实时回显；工具块自动折叠；运行中可点「强制停止」 |
+| **卡片上审批** | 工具要权限时直接在飞书卡片上点，不用回到电脑前 |
+| **卡片上追问** | 模型需要你补充信息时发提问卡，点选项或直接回文字都行 |
+| **话题状态一目了然** | 话题根卡随状态变色：🟡 待审核 / 🧠 运行中 / ⏳ 待回复 / 🔴 失败 / ⏹ 已中断 / ✅ 完成 |
+| **图片与文件** | 直接把图或文件发进话题，会自动落盘并交给模型 |
+| **机器人菜单** | 飞书底部的 `new` / `sessions` 按钮等价于 `/new` / `/sessions` |
+| **看门狗** | 会话卡死会自动中断并通知你（等待你审批/回答的时间不算卡死） |
 
-## 命令可用性
+## 为什么用它
 
-**`/help` 由 `COMMAND_SPECS`（`src/bridge/commands.ts`）生成**，与真正执行的 switch 是同一张表 ——
-所以它**不可能再列出没实现的命令**（缺陷 6 的修复）。
+- **最小权限**：只申请两个 scope（`im:message.p2p_msg:readonly` + `im:message:send_as_bot`），
+  **不申请任何群权限** —— 机器人在平台层面就收不到群消息，不存在"被拉进群乱说话"的可能。
+- **不需要公网端点**：走飞书长连接（WebSocket），你在自己电脑上跑就行。
+- **单人对单机**：首个给机器人发消息的人自动绑定为 owner，之后其他人会被静默忽略；
+  配合飞书后台的"可用范围：仅本人"，边界由平台兜底。
+- **失败看得见**：模型报错会显示 ❌ 和**真实原因**，不会把失败装成成功。
 
-| 已实现 | 行为 |
-|---|---|
-| `/help` | 按 scope 显示（主聊天流 / 话题内两套文案），只列已实现命令 |
-| `/new`（= `/form`） | 解析**模型 + 工作目录**后建会话 → 记为当前 → 发"根卡"，**回复根卡**即进入该会话 |
-| `/current` | 显示当前/话题会话（标题、id、权限档位、目录） |
-| `/sessions`（= `/ls`） | 列出本聊天的会话（带序号与「← 当前」），提示用 `/use` 切换 |
-| `/use <序号\|前缀>` | 切换当前会话（前缀歧义/未命中给专门提示） |
-| `/perm [档位]` | 查看/设置会话权限档位（直接影响审批门判定） |
-| `/steer <文本>` | 强制插队投递 |
-| `/stop` | 与卡片「强制停止」共用同一恢复例程 |
-| 机器人菜单 `new` / `sessions` | 合成为等价命令，走**与文本完全相同**的管线（`application.bot.menu_v6`） |
-| 尚未实现 | `/model` `/cd` `/now` `/dir` `/cancel` `/resume`；敲了会**明确回报原因**，不假装成功，也**不进 `/help`** |
+---
 
-### 建会话的前置条件（不要跳过）
+## 快速开始
 
-`/new` 与"话题内第一条消息建会话"都会**先解析模型与目录，失败就不建会话**：
+### 1. 在飞书开放平台建一个应用
 
-- **模型**：插件配置的 `provider`/`model` → dsh 的 `agentDefaultModel.currentSelection()` → 都没有就**拒绝建会话**
-  并回一张可操作的提示卡。绝不创建"注定跑不起来"的会话。
-- **目录**：显式目录 → 配置的 `cwd` → `allowedRoots[0]`，再做越界与系统目录校验。
-  **不再回落 `process.cwd()`**（旧实现会让会话目录取决于宿主从哪启动）。
+1. 到 [飞书开放平台](https://open.feishu.cn/app) 创建**企业自建应用**；
+2. **添加「机器人」能力**并**发布版本**（不发布的话长连接会一直卡在解析 bot 身份）；
+3. **事件与回调**：
+   - 订阅方式选 **使用长连接接收事件**（不要选 Webhook）；
+   - 订阅事件：`im.message.receive_v1`；
+   - （可选）订阅 **机器人自定义菜单事件** `application.bot.menu_v6`，否则底部菜单按钮点了没反应；
+   - 添加回调：`card.action.trigger`（卡片按钮必需，零权限要求）；
+4. **权限管理**按下表开权限；
+5. **可用范围**建议选「仅本人」；
+6. 发布版本，记下 **App ID** 与 **App Secret**。
 
-`resume` 路径会**重新带一遍模型路由**：否则 agent 被回收后，下一条消息会以"没有模型"的状态恢复，重现同一个失败。
-
-## 架构
-
-分层见 [docs/REDESIGN.md §5](docs/REDESIGN.md)。要点：
-
-```
-src/
-├─ index.ts             # Cordis 入口：name / inject / Config / apply；装配下面几层
-├─ feishu/              # 飞书表现层：长连接 supervisor、卡片 JSON、卡片硬限、通道封装
-├─ bridge/              # 翻译层（宿主无关、纯逻辑为主）
-│   dirs.ts             #   工作目录策略（越界 / 系统目录 / 默认值）
-│   commands.ts         #   命令表 **单一真源**（/help 由它生成）
-│   menu.ts             #   机器人自定义菜单事件解析
-│   outbound.ts         #   session/event → 运行卡（终态契约见 REDESIGN §3）
-│   …（routing / session-map / submit / approval / questions / attachments / watchdog …）
-├─ dsh/                 # **唯一**接触 @deepseek-ai/dsh-* 的地方
-│   port.ts             #   会话生命周期 + 投递动词（create/resume 都带模型路由）
-│   model.ts            #   模型解析（配置覆盖 → agentDefaultModel → 失败）
-│   storage.ts / source.ts
-├─ config.ts            # schemastery schema + 派生（缺凭据只禁用，非法值加载即失败）
-├─ security/token.ts    # 卡片按钮自签 token（HMAC + 用途隔离 + TTL + nonce 防重放）
-└─ utils/ttl-map.ts     # 惰性过期 TTL Map
-```
-
-**不可协商的约束**：`src/bridge/**` 与 `src/feishu/**` 不 import 任何 `@deepseek-ai/dsh-*`
-**运行时**模块（类型除外），因此核心逻辑可以在没有 dsh 的环境里单测。
-
-dsh 接缝（均已在真实宿主上确认存在）：
-
-| 用途 | 接缝 |
-|---|---|
-| 建会话 / 取回 agent | `ctx.agents.create({sessionId, meta:{cwd}, agentOptions})` / `ctx.agents.resume({resumeSessionId, agentOptions})` |
-| **默认模型** | `ctx.agentDefaultModel.currentSelection()` → `{provider, model, reasoningEffort?}` |
-| 投递用户消息 | `agent.followup(msg)`（下一轮）/ `agent.steer(msg)`（插队）/ `agent.inject(msg)`（只进上下文） |
-| 中断 | `agent.cancel({kind:'user'})` |
-| 实时文本 | `ctx.on('agent/assistant-stream')` → `frame.chunk.type === 'text-delta'` |
-| 持久结算 / 工具活动 | `ctx.on('session/event')` → `assistant/message` / `tool/call` / `tool/result` / `turn/end` |
-| 工具审批 | `ctx.on('approval/request', (req, next) => …)` 返回 `allowed-once` / `rejected` / `cancelled` / `unavailable`（fail-closed） |
-| agent 提问 | `ctx.on('user-questions/request', (req, next) => …)` 返回 `{answers:[{id,selected,custom?}]}` |
-| 机器人菜单 | `channel.onRawEvent('application.bot.menu_v6', …)`（SDK 的 EventMap 没有该事件，走逃生通道） |
-| 话题映射持久化 | `ctx.storageDomain` |
-| 附件 | `ctx.attachments`（`admitPromptContent` / `saveFile`） |
-| 凭据 | `ctx.credentials` |
-
-飞书侧使用官方 `@larksuite/channel`（MIT，飞书维护）：WS 长连接 + 自动重连 + 心跳、事件归一化（message / cardAction / reaction）、流式打字机卡片、附件上传下载 —— 省掉上游自己实现的约 7k 行飞书管道代码。
-
-## 里程碑
-
-- **M1 骨架** ✅ 工具链、bundle patch、配置 schema、token 内核 + 单测
-- **M2 连接** ✅ `@larksuite/channel` 长连接 supervisor（世代化 + 有界指数退避 + dispose 收敛）、入站决策纯函数、单人 owner 绑定、结构化脱敏日志
-- **M3a 会话桥** ✅ 话题↔会话映射（`ctx.storageDomain` 领域表 `feishu_topics`）、会话创建、投递（`followup`/`steer`）
-- **M3b 运行卡** ✅ 运行卡控制器（流式正文 + 工具块 + 强停按钮，700ms 节流遵守飞书 10 次/秒限制）、`/help` `/status` `/stop`、卡片回调验签 + 防重放
-- **M4 决策桥**：审批卡（四档 gate + 白名单 + token 校验）、提问卡、看门狗、附件
-- **M5 发布**：扫码 onboarding、locale/icon、peer 区间对齐、兼容性矩阵与文档
-
-## 官方文档核对（`docs/user/develop/`）
-
-实现前逐篇读过官方开发文档（`basic/` 四篇 + `framework/` 三篇），并按其规则修正了三处：
-
-| 文档规则 | 出处 | 落地 |
-|---|---|---|
-| 可调参数必须做成配置字段（"能否在 `cordis.yml` 里改这个值而不改代码？"） | `basic/config.zh.md:78-92` | 退避参数、卡片节流/上限、标题长度全部进 `Config` |
-| 默认值写在 schema；非法配置在**加载时**响亮失败 | `basic/config.zh.md:9-45,94-96` | 区间约束（`min/max`）进 schemastery，`resolveConfig` 只做派生 |
-| 与宿主共享实例的 dsh 包必须**同时**在 `peerDependencies` 与 `devDependencies` | `basic/publish.zh.md:103` | 已补 4 个 dsh peer（`^0.2.0-rc.2`，带预发布标签才过兼容闸门） |
-| 卸载清理逆序但异步并发；顺序相关的清理放同一个 `ctx.effect` | `framework/index.zh.md:63` | 拆除标志 `disposed` + 单个 effect 内串行 stop |
-
-**一条与文档不符的实测**：`framework/service.zh.md:95-99` 写"可选依赖：不写 inject，用 `ctx.get()` 查询"。但在 0.2.0-rc.2 的真实宿主里探针实测：
-
-```
-ctx.get('agents')  = object      ← 已在 inject 里的服务
-ctx.get('tools')   = undefined
-ctx.get('sessionTitle') = undefined   ← 未 inject 的可选服务拿不到
-ctx.sessionTitle   = ✗ 抛 cannot get property "sessionTitle" without inject
-```
-
-所以本插件的可选服务统一用 `ctx.inject([...], sub => …)` 子级（`src/dsh/port.ts` 的 `sessionTitle` 就是这样），这也是 M3a 首次真实投递失败的原因。
-
-## 开发期验证（已完成）
-
-用**隔离的 DSH_HOME** + `--patch` 覆盖层指向本地构建产物，不碰真实 profile：
+### 2. 安装插件
 
 ```sh
-pnpm run build
-cat > /tmp/feishu-dev.patch.yml <<'YAML'
-- insert:
-    - id: feishu
-      name: '/Users/code/wps/dsh-feishu-plugin/lib/index.js'   # 绝对路径
-      config:
-        logLevel: debug
-YAML
-DSH_HOME=/tmp/dsh-feishu-dev dsh web --patch /tmp/feishu-dev.patch.yml --no-open --port 3099
+dsh plugin --profile <profile> add dsh-feishu-plugin
 ```
 
-已实测的两条路径：
+> **可能撞到的一道坎**：pnpm ≥10 默认拒绝运行依赖的构建脚本，而 dsh 初始化 profile 时只留了一个占位符
+> （`allowBuilds: protobufjs: set this to true or false`）。不表态时 `add` 会以 `ERR_PNPM_IGNORED_BUILDS` 退出
+> —— **失败的那次不会把插件加进 `dsh.profile.bundles`**，于是看起来"装了但没生效"。
+> 用本包自带的 CLI 幂等修好，然后再 `add` 一次：
+>
+> ```sh
+> dsh-feishu-plugin prepare --profile <profile>
+> dsh plugin --profile <profile> add dsh-feishu-plugin
+> ```
+>
+> 验证（不需要启动）：
+> ```sh
+> dsh --profile <profile> --dump-config | grep -A3 '== dsh-feishu-plugin'
+> ```
 
-1. **加载路径**（无凭据）：插件被 cordis 加载、`apply()` 执行、schema 校验通过，只告警并保持禁用，宿主正常启动。
-2. **连接路径**（假凭据）：`@larksuite/channel` 正常初始化（`client ready` / `event-dispatch is ready`），`connect()` 打到真实飞书 API 后失败，supervisor 按 500→1000→2000→4000→8000→16000→30000(封顶) 退避重试，宿主照常提供服务。
+### 3. 填配置
 
-**部署前提**：SDK 的 `connect()` 会先调 `/open-apis/bot/v3/info` 解析 bot 身份 —— 应用**必须已添加"机器人"能力并发布版本**，否则会一直停在这一步。
+把凭据写进该 profile 的 `cordis.patch.yml`（路径 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`）：
+
+```yaml
+- id: feishu
+  config:
+    appId: cli_xxxxxxxxxxxx
+    appSecret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    # 其余字段见下方「配置项」，留空即用默认值
+```
+
+> 注意：patch 的 `config` 是**整体替换**而不是深合并 —— 覆盖这一行时要把它需要的字段都写出来。
+
+### 4. 启动并绑定
+
+```sh
+dsh --profile <profile>
+```
+
+看到 `飞书长连接已建立` 就成功了。然后在飞书里**给机器人发一条消息** ——
+**第一个发消息的人会自动成为 owner**，之后其他人会被静默忽略。
+
+---
+
+## 怎么用
+
+### 主聊天流 = 管理台
+
+**普通文本不会进入任何会话**，它只做一件事：理解你想干什么。
+
+```
+帮我看下 wps 那个仓库的编译报错
+```
+
+AI 会判断这是"要干活"，然后：
+- 匹配到 `/Users/code/wps` 这个目录（候选来自你允许的根目录下的子目录 + 历史会话目录）；
+- 用你当前的默认模型；
+- **把表单预填好发给你**，目录、模型、权限都能改，点「创建会话」即可。
+
+如果只是闲聊或问用法，它会回一张管理台提示卡，不会建会话。
+
+也可以直接敲 `/new` 打开空白表单。
+
+### 话题 = 任务会话
+
+在话题里发消息就是给这个会话派活：
+
+```
+你：这个报错怎么修
+🤖：（流式输出 + 工具调用，实时回显）
+🔐 权限请求：shell
+     [✅ 允许一次] [🔓 始终允许] [✅ 本会话内允许该工具] [❌ 拒绝]
+```
+
+**一张话题根卡**会跟着状态变色，一眼看出这个会话在干嘛。
+
+### 命令
+
+**主聊天流与话题内是两套命令**：建会话/会话管理在主聊天流做，任务操作用话题内命令。
+
+| 命令 | 在哪用 | 作用 |
+|---|---|---|
+| `/new [标题]`、`/form [标题]` | 主聊天流 | 打开发建会话表单 |
+| `/sessions`（别名 `/ls`） | 主聊天流 | 会话列表卡（翻页 / 进入 / 新建） |
+| `/use <序号\|会话id前缀>` | 主聊天流 | 切换当前会话 |
+| `/current` | 都可以 | 看当前（话题内为"本话题"）会话 |
+| `/stop` | 都可以 | 中断正在跑的任务 |
+| `/steer <文本>` | 都可以 | 打断当前步骤，立即插队发送 |
+| `/perm [档位]` | 都可以 | 查看 / 修改本会话的权限档位 |
+| `/help` | 都可以 | 显示帮助（**只列真正可用的命令**） |
+
+话题内敲建会话类命令，会提示你回主聊天流（`/new` `/sessions` `/use` 等）。
+
+**还没实现的命令**：`/model` `/cd` `/now` `/dir` `/cancel` `/resume`。
+它们**不会出现在 `/help` 里**（避免误导），但敲了会明确告诉你原因。
+其中"续聊历史会话"由**会话列表卡的「▶️ 进入 / ▶️ 再开」**承担。
+
+### 权限档位
+
+建会话时可以选四档，决定这个会话里工具调用要怎样审批：
+
+| 档位 | 含义 |
+|---|---|
+| 🔒 只读 | 禁止编辑 / 执行 / 写入，最安全 |
+| ✏️ 可编辑 | 允许改文件；执行命令需你审批（默认） |
+| ⚠️ 高风险审批 | 继承默认规则，对 shell / 编辑 / 外部目录逐次审批 |
+| 🔓 完全信任 | 放行全部操作，请谨慎使用 |
+
+「本会话内允许该工具」只影响**当前会话**，其他会话不受影响；改权限档位会清空这个放行表。
+
+### 发图片和文件
+
+直接把图片或文件发进话题即可，会自动下载并交给模型；下载失败不会阻断这一轮，只会在正文里附一行说明。
+
+---
+
+## 配置项
+
+完整字段与注释见 [`cordis.patch.yml`](cordis.patch.yml)。常用字段：
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `appId` / `appSecret` | — | 飞书应用凭据（必需，否则插件保持禁用） |
+| `appSecretRef` | — | 改用凭据库里的名字（不把密钥写进配置文件） |
+| `domain` | `https://open.feishu.cn` | 国际版填 `https://open.larksuite.com` |
+| `allowedRoots` | `[用户家目录]` | 允许作为会话工作目录的根；**越界一律拒绝** |
+| `cwd` | `allowedRoots[0]` | 新会话的默认工作目录 |
+| `allowUsers` | `[]` | open_id 白名单；空 = 仅首个发消息者绑定的 owner |
+| `groupEnabled` | `false` | 群入口开关（默认关，且平台上收不到群消息） |
+| `permissionGate` | `gate` | 全局审批门：`off` / `notify` / `gate` / `lockdown` |
+| `allowTools` / `denyTools` | 读类工具免审批 | 免审批白名单（支持 `prefix*`）与强制拒绝 |
+| `busyDelivery` | `steer` | 会话忙时新消息：`steer` 立即插队 / `queue` 排队 |
+| `intentRouting` | `true` | 主聊天流的 AI 意图识别；关掉就只回管理台提示卡 |
+| `intentTimeoutMs` | `15000` | 意图识别超时（超时降级为空表单，不影响使用） |
+| `sessionPageSize` | `8` | 会话列表每页行数（5–20） |
+| `provider` / `model` | 用 dsh 默认模型 | 想给飞书单独指定模型时**两个都要写** |
+| `staleExecutionMs` | `300000` | 看门狗阈值；`0` 关闭 |
+| `approvalTtlMs` | `600000` | 审批按钮有效期 |
+| `cardThrottleMs` | `700` | 运行卡更新节流（飞书限同一卡片 ≤10 次/秒） |
+| `logLevel` / `logFile` | `info` / 关 | 排错时设 `debug` 与 `logFile: true` |
+
+**建会话的两个前置条件**（拿不到就**拒绝建会话**并说明原因，而不是建一个跑不起来的会话）：
+
+| 关注点 | 取值顺序 |
+|---|---|
+| 模型 | 配置 `provider`+`model` → dsh 的默认模型 |
+| 工作目录 | 表单里选的 → 配置 `cwd` → `allowedRoots[0]`，再过越界与系统目录校验 |
+
+---
 
 ## 权限清单（部署时照做）
 
 | 项 | 值 |
 |---|---|
 | API 权限（必开） | `im:message.p2p_msg:readonly`、`im:message:send_as_bot` |
-| API 权限（可选，图片/文件） | `im:message:readonly` |
+| API 权限（可选，收图片/文件） | `im:message:readonly` |
 | 事件订阅方式 | **使用长连接接收事件**（不要选 Webhook） |
 | 订阅事件 | `im.message.receive_v1` |
-| 回调 | `card.action.trigger`（零权限要求） |
+| 订阅事件（可选） | `application.bot.menu_v6`（机器人自定义菜单，不订阅则菜单按钮无反应） |
+| 回调 | `card.action.trigger`（卡片按钮，零权限要求） |
 | 机器人能力 | 必须开启并发布版本 |
-| 可用范围 | 建议"仅本人" —— 这是单人边界的平台层保证 |
-| **不要申请** | 任何群相关 scope（`im:message.group_at_msg*`），这样机器人物理上收不到群消息 |
+| 可用范围 | 建议「仅本人」—— 单人边界的平台层保证 |
+| **不要申请** | 任何群相关 scope（`im.message.group_at_msg*`） |
 
-## 配置
+---
 
-见 [cordis.patch.yml](cordis.patch.yml)（含逐项注释与默认值）。凭据走 `appId` / `appSecret` 或 `appSecretRef`。
+## 常见问题
 
-新会话的两个前置条件（**都要能确定，否则拒绝建会话**）：
+**装了但没生效？**
+`dsh --profile <profile> --dump-config | grep '== dsh-feishu-plugin'` 看层在不在。
+不在的话多半是 `ERR_PNPM_IGNORED_BUILDS`（见「安装」里的说明）。
 
-| 关注点 | 取值顺序 | 拿不到时 |
-|---|---|---|
-| 模型 | 配置 `provider`+`model` → dsh 的 `agentDefaultModel.currentSelection()` | 拒绝建会话 + 可操作提示卡 |
-| 工作目录 | 显式目录 → 配置 `cwd` → `allowedRoots[0]`（**不回落 `process.cwd()`**），再过越界/系统目录校验 | 拒绝建会话 + 说明原因 |
+**在飞书里发消息没反应？**
+1. 看日志有没有 `飞书长连接已建立`；
+2. 确认应用**已开启机器人能力并发布版本**（否则连 bot 身份都解析不出来）；
+3. 确认你是 owner 或白名单用户 —— **非白名单用户会被静默忽略**（不回复，这是有意的）；
+4. 把 `logLevel` 设成 `debug` 再看。
 
-## 安装（已按生产路径实测）
+**点了机器人底部菜单没反应？**
+需要在开发者后台订阅 `application.bot.menu_v6`。没订阅的话事件根本不会推过来，
+日志里也不会有"收到机器人菜单事件"。
 
-这是一个**组合包**（`dsh.bundle.patch`）：装进 profile 后会把自己的层插进配置。
+**消息发出去了，但卡片停在"运行中"不动？**
+模型或网络卡住时看门狗会在 `staleExecutionMs`（默认 5 分钟）后自动中断并通知你。
+等待你审批或回答的时间**不算卡死**，不会被误杀。
 
-```sh
-# 1) 装进某个 profile（会写进该 profile 的 dsh.profile.bundles）
-dsh plugin --profile <name> add dsh-feishu-plugin
-```
+**报错显示 ❌ 和一个我看不懂的原因？**
+卡片上那行 ⚠️ 是模型/服务商返回的**原始错误**（如 `Insufficient Balance（QUOTA）`）。
+这是有意保留的 —— 比"失败了但不说为什么"有用。
 
-**可能撞到的一道坎**：pnpm ≥10 默认拒绝运行依赖的构建脚本，而 dsh 初始化 profile 时只在
-`<profile>/pnpm-workspace.yaml` 里写一个占位符：
+---
 
-```yaml
-allowBuilds:
-  protobufjs: set this to true or false
-```
-
-不表态时 `add` 会以 `ERR_PNPM_IGNORED_BUILDS` 非零退出 —— **失败的那次不会把组合包加进
-`dsh.profile.bundles`**，于是插件"装了但没生效"。用本包自带的 CLI 幂等修好，然后再 `add` 一次：
-
-```sh
-dsh-feishu-plugin prepare --profile <name>    # → allowBuilds.protobufjs: false
-dsh plugin --profile <name> add dsh-feishu-plugin
-```
-
-验证（不需要启动）：
-
-```sh
-dsh --profile <name> --dump-config | grep -A3 '== dsh-feishu-plugin'
-```
-
-**实测记录**（2026-10-05，dsh 0.2.0-rc.2）：
-
-1. `pnpm pack` 产出的 tarball 装进全新 profile：`Packages: +61`，`dsh.profile.bundles` 变为 `["@deepseek-ai/dsh-base", "dsh-feishu-plugin"]`；
-2. profile 的 `node_modules/@deepseek-ai/` 里**只有 cosmokit 与 schemastery**（没有 `dsh-*` 副本），
-   而插件仍能启动 —— 证明 7 个 `@deepseek-ai/dsh-*`（llm / agent / session / storage-domain /
-   user-approval / user-questions / attachment）**都从运行时安装目录解析**；
-3. `dsh --profile feishu web` 启动成功：`已加载` → SDK 初始化 → `飞书长连接已建立`。
-
-## 开发
+## 参与开发
 
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm test
+pnpm test              # 602 个用例
+pnpm run test:coverage # 覆盖率门槛写在 vitest.config.ts
 pnpm run build
 ```
 
+设计文档（写给维护者，不是使用说明）：
+
+| 文档 | 内容 |
+|---|---|
+| [docs/REDESIGN.md](docs/REDESIGN.md) | 分层与宿主接缝：哪些归 dsh、哪些归插件，终态契约 |
+| [docs/DESIGN-SESSION-MANAGEMENT.md](docs/DESIGN-SESSION-MANAGEMENT.md) | 会话管理面（管理台 / 话题 / AI 引导 / 列表 / 根卡状态）的设计与实现记录 |
+| [docs/CONFIG-UI-AND-DISTRIBUTION.md](docs/CONFIG-UI-AND-DISTRIBUTION.md) | 配套配置界面与分发方案（提案） |
+| [NOTICE.md](NOTICE.md) | 与 `opencode-feishu-plugin` 的来源与授权说明 |
+
 ## 许可
 
-MIT，Copyright (c) 2026 moyuanhua。移植来源与授权说明见 [NOTICE.md](NOTICE.md)。
+MIT，Copyright (c) 2026 moyuanhua。
