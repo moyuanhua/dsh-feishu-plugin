@@ -83,6 +83,31 @@ allowBuilds:
 
 ---
 
+## 已知问题：全新 profile 上首次安装会失败一次（待修）
+
+**0.1.0 实测**（干净的 profile，按包名安装）：
+
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.6
+dsh: plugin command failed
+```
+
+`protobufjs` 是飞书 SDK 的传递依赖，pnpm ≥10 默认拦下它的构建脚本。当前的恢复路径三步
+（`prepare` → 清掉半装状态 → 重装），README 的「安装」一节已写成可照做的步骤。
+
+**但这是 UX 债务，根因在"运行时有依赖"**。正确的修法是**把 `@larksuite/channel` 打进 `lib/`**
+（上游 `opencode-feishu-plugin` 就是这么做的：`dist/index.js` 是自包含 bundle，
+"运行时无需手动 npm install"）。那样：
+
+- `add` 一次成功，不需要 `prepare`、不需要 allowBuilds、不需要清状态；
+- `dependencies` 变空，`prepublishOnly` 之外没有构建脚本；
+- 安装体积换 UX，与上游一致。
+
+代价：构建从 `tsc` 换成打包器（上游用 tsup），并要验证 bundle 在真实宿主里能加载。
+
+**另一个坑（已实测确认）**：失败后直接重试 `add` 会输出 "Already up to date" 并
+`RC=0`，**但不会把插件写进 `dsh.profile.bundles`** —— 症状就是"装了但没生效"。
+
 ## 发布前 checklist
 
 - [ ] `package.json` 的 `version` 已更新
