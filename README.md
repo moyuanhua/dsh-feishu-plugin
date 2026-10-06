@@ -69,37 +69,16 @@
 dsh plugin --profile <profile> add dsh-feishu-plugin
 ```
 
-**这一步在全新 profile 上会先失败一次**，这是已知的、也是必经的：
+装完即用。也可以在**侧栏 → 插件**页里图形化安装。
 
-```
-[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.6
-```
-
-原因：pnpm ≥10 默认拒绝运行依赖的构建脚本，而本插件的飞书 SDK 会带进 `protobufjs`。
-**那次失败不是白跑** —— dsh 已经在 profile 里留下了需要你表态的占位符。按顺序走完：
-
-```sh
-# ① 用本包自带的 CLI 把占位符改成明确的 false（幂等，随便跑几次都行）
-dsh-feishu-plugin prepare --profile <profile>
-
-# ② 清掉半装状态，再装一次（这一步不能省：直接重试会因为"Already up to date"
-#    跳过包裹选择，结果是"依赖装了、bundles 没加 = 装了不生效"）
-cd $DSH_HOME/profiles/<profile>
-rm -rf node_modules pnpm-lock.yaml
-python3 -c "import json;p='package.json';d=json.load(open(p));d.pop('dependencies',None);json.dump(d,open(p,'w'),indent=2)"
-
-# ③ 重新安装
-dsh plugin --profile <profile> add dsh-feishu-plugin
-```
+> 本插件是**自包含 bundle**（飞书 SDK 已打进 `lib/`），`dependencies` 只有一个 Config schema
+> 包，**不会触发 pnpm 的构建脚本拦截**，所以不需要处理 `allowBuilds`。
 
 验证（不需要启动）：
 
 ```sh
-python3 -c "import json;print(json.load(open('$DSH_HOME/profiles/<profile>/package.json'))['dsh']['profile']['bundles'])"
-# 应包含 dsh-feishu-plugin
+dsh --profile <profile> --dump-config | grep -A3 '== dsh-feishu-plugin'
 ```
-
-> 也可以在**侧栏 → 插件**页里图形化完成同样的操作（安装、允许构建脚本、启用）。
 
 ### 3. 填配置
 

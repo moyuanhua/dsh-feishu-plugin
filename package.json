@@ -1,8 +1,8 @@
 {
   "name": "dsh-feishu-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
-  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, long connection with no public endpoint. Minimal permissions: p2p read + send-as-bot only, no group scopes.",
+  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, long connection with no public endpoint. Minimal permissions: p2p read + send-as-bot; self-contained bundle, zero runtime deps.",
   "type": "module",
   "keywords": [
     "dsh",
@@ -62,13 +62,13 @@
     "url": "https://github.com/moyuanhua/dsh-feishu-plugin/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly && node scripts/bundle.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "rm -rf lib",
-    "prepare": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm test"
   },
   "dsh": {
@@ -77,9 +77,7 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1",
-    "@larksuite/channel": "^0.7.1",
-    "zod": "^4.6.5"
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1 <5",
@@ -100,9 +98,12 @@
     "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
     "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
     "@deepseek-ai/dsh-user-questions": "0.2.0-rc.2",
+    "@larksuite/channel": "^0.7.1",
     "@types/node": "^22.20.0",
     "@vitest/coverage-v8": "^3.2.7",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.0",
+    "zod": "^4.6.5"
   }
 }

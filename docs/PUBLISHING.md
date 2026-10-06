@@ -83,30 +83,31 @@ allowBuilds:
 
 ---
 
-## 已知问题：全新 profile 上首次安装会失败一次（待修）
+## 已修复：首次安装会失败一次（0.1.0 → 0.2.0）
 
-**0.1.0 实测**（干净的 profile，按包名安装）：
+**0.1.0 的问题**：运行时要依赖 `@larksuite/channel`，它会带进 `protobufjs`，
+pnpm ≥10 默认拦下它的构建脚本 → 全新 profile 上首次 `dsh plugin add` 必然失败：
 
 ```
 [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.6
-dsh: plugin command failed
 ```
 
-`protobufjs` 是飞书 SDK 的传递依赖，pnpm ≥10 默认拦下它的构建脚本。当前的恢复路径三步
-（`prepare` → 清掉半装状态 → 重装），README 的「安装」一节已写成可照做的步骤。
+而且失败后**直接重试是无效的**：会输出 "Already up to date" 且 `RC=0`，
+但不会写 `dsh.profile.bundles` —— 正是「装了不生效」。
 
-**但这是 UX 债务，根因在"运行时有依赖"**。正确的修法是**把 `@larksuite/channel` 打进 `lib/`**
-（上游 `opencode-feishu-plugin` 就是这么做的：`dist/index.js` 是自包含 bundle，
-"运行时无需手动 npm install"）。那样：
+**0.2.0 的修法**：把 `@larksuite/channel` 与 `zod` 打进 `lib/`（与上游自包含 bundle 一致），
+`dependencies` 只剩一个 Config schema 包。实测全新 profile：`Packages: +4`、一次成功、
+无 `ERR_PNPM_IGNORED_BUILDS`。
 
-- `add` 一次成功，不需要 `prepare`、不需要 allowBuilds、不需要清状态；
-- `dependencies` 变空，`prepublishOnly` 之外没有构建脚本；
-- 安装体积换 UX，与上游一致。
+### 打包这件事有两个必须保留的坑（都在 `scripts/bundle.mjs` 里）
 
-代价：构建从 `tsc` 换成打包器（上游用 tsup），并要验证 bundle 在真实宿主里能加载。
+CJS 依赖被打进 ESM 时，esbuild 的 `__require` 垫片会抛
+`Dynamic require of "util" is not supported`；补了 `require` 之后还会撞
+`__dirname is not defined in ES module scope`（飞书 SDK 用它读自己的 package.json）。
+所以 banner 里那三行 **`require` / `__filename` / `__dirname` 的 shim 一个都不能删**。
 
-**另一个坑（已实测确认）**：失败后直接重试 `add` 会输出 "Already up to date" 并
-`RC=0`，**但不会把插件写进 `dsh.profile.bundles`** —— 症状就是"装了但没生效"。
+静态检查看不出这类问题 —— 所以 `scripts/bundle.mjs` 末尾有一个**真的 import 一次**的
+冒烟测试，失败即构建失败。
 
 ## 发布前 checklist
 
