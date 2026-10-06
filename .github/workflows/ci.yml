@@ -8,6 +8,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 上限兜底：测试挂死时要在 10 分钟内失败，而不是挂到 6 小时的 job 上限。
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

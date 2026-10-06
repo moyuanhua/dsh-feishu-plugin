@@ -7,7 +7,7 @@
  * - 循环引用不炸；
  * - 落盘文件是 0600。
  */
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -265,8 +265,23 @@ describe("createLogSink", () => {
     expect(() => sink.close()).not.toThrow();
   });
 
+  /**
+   * 用「父路径是普通文件」造不可写路径：`mkdirSync('<file>/sub')` 在任何平台都抛 ENOTDIR。
+   *
+   * 之前这里写死 `/proc/...`，那是**平台相关**的：Linux 上与 macOS 行为不同，
+   * 于是 `createLogSink` 返回了 sink → 断言失败 → **而那个 sink 从未被 close** →
+   * 未释放的 write stream 让 vitest worker 永不退出，CI 无限挂起。
+   * 所以这里即使断言失败也必须把可能的返回值关掉。
+   */
   test("路径不可写 → undefined（插件照常启动）", () => {
-    expect(createLogSink("/proc/definitely/not/writable/app.log")).toBeUndefined();
+    const blocker = join(tempDir(), "not-a-dir");
+    writeFileSync(blocker, "x");
+    const sink = createLogSink(join(blocker, "sub", "app.log"));
+    try {
+      expect(sink).toBeUndefined();
+    } finally {
+      sink?.close();
+    }
   });
 });
 

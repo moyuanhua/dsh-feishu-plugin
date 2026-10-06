@@ -22,6 +22,17 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     environment: "node",
     globals: false,
+    /**
+     * 这三个超时是**安全网**，不是可选项。
+     *
+     * 实测教训：一条泄漏了文件描述符的用例（未 close 的 write stream）会让
+     * vitest 的 worker **永不退出**，本地看不出来（macOS 行为不同），CI 上表现为
+     * 一个跑了十几分钟还没结束的 job —— 而日志里什么都看不到。
+     * 有了这三个上限，"挂死"最坏也就是一次有明确报错的失败。
+     */
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
+    teardownTimeout: 15_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],

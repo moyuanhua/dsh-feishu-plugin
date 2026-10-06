@@ -141,7 +141,11 @@ export function createLogSink(logFile: string | undefined): LogSink | undefined 
   try {
     mkdirSync(dirname(logFile), { recursive: true });
     const stream = createWriteStream(logFile, { flags: "a", mode: 0o600 });
-    stream.on("error", () => {});
+    stream.on("error", () => {
+      // **必须销毁**：错误之后流仍持有文件描述符，而未释放的 write stream 会让
+      // Node 进程永不退出 —— 日志目录被删/磁盘满时，这会变成"插件杀不掉"的现场。
+      stream.destroy();
+    });
     return {
       sink: (line: string) => {
         stream.write(line);

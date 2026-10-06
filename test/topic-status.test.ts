@@ -14,7 +14,12 @@ import {
   type TopicStatusState,
 } from "../src/bridge/topic-status.js";
 
-const NOW = new Date("2026-10-05T14:03:00+08:00").getTime();
+/**
+ * **必须用本地时间构造**：`topicStatusView` 用 `getHours()` 渲染"本地时钟"，
+ * 若这里写死 `+08:00` 再断言 `14:03`，在 UTC 的 CI 上会变成 `06:03`
+ * （本地是 Asia/Shanghai 所以一直没暴露）。
+ */
+const NOW = new Date(2026, 9, 5, 14, 3, 0).getTime();
 
 /** 把若干事件折叠成状态。 */
 function fold(events: readonly unknown[], from: TopicStatusState = INITIAL_TOPIC_STATUS): TopicStatusState {
@@ -134,7 +139,7 @@ describe("topicStatusView", () => {
   }
 
   test("时钟补零", () => {
-    const at = new Date("2026-10-05T09:05:00+08:00").getTime();
+    const at = new Date(2026, 9, 5, 9, 5, 0).getTime();
     expect(topicStatusView({ running: true, queued: 0 }, at).footer).toBe("🧠 运行中 · 09:05");
   });
 });
