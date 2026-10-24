@@ -17,7 +17,7 @@
 | 新图标 | DSH 鲸鱼 + 飞书蓝气泡构图，128px / 48px 两档渲染检查通过 |
 | 卡片按钮刷新 | 卡片更新改为在 `card.action.trigger` 回调响应里返回 `card`（并行延迟 patch 兜底），避免 Feishu 在回调结束后用原卡片覆盖 |
 | 调试开关 | `debugLog` volatile 字段：插件页勾选即强制 debug 级别，日志仍写 `feishu.log` |
-| 工具折叠 | 运行卡按 OpenCode 策略折叠：≥3 个工具时运行中仅展开最新一个，终态整体折叠为摘要；最多保留 12 个 |
+| 工具折叠 | 运行卡永远只展开最新一个工具，历史工具折叠为摘要；最多保留 12 个 |
 | 会话简介 | `sessionQuery.readSurface` 读取冷会话 surface；进入老会话时附历史摘要/上一条/上次回复，`/brief` 可重复读取 |
 | 新会话默认值 | `defaultDirectory` / `defaultModel` / `defaultPermissionPreset` 均可从插件页编辑；目录走 `uiWorkspace.pickDirectory()`，模型/权限来自 DSH catalog |
 | npm 包结构 | `npm pack --dry-run`：10 个文件，含 `lib/index.js`、`lib/client.js`、patch、locale、icon、README/LICENSE/NOTICE |

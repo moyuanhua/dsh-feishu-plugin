@@ -434,15 +434,12 @@ function collapsedTools(tools, finalized) {
 function toolElements(run) {
   const tools = run.tools ?? [];
   if (tools.length === 0) return [];
-  const running = run.status === "starting" || run.status === "running";
-  if (tools.length < 3) return tools.map((tool) => toolPanel(tool, false));
-  if (!running) return [collapsedTools(tools, true)];
-  const prior = tools.slice(0, -1);
+  // Always surface only the newest tool; everything before it stays folded.
   const latest = tools[tools.length - 1];
-  const elements = [];
-  if (prior.length > 0) elements.push(collapsedTools(prior, false));
-  elements.push(toolPanel(latest, true));
-  return elements;
+  const prior = tools.slice(0, -1);
+  const finalized = run.status !== "starting" && run.status !== "running";
+  if (prior.length === 0) return [toolPanel(latest, true)];
+  return [collapsedTools(prior, finalized), toolPanel(latest, true)];
 }
 
 export function runCard({ run, maxAnswerChars }) {

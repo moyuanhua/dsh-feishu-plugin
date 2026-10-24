@@ -148,7 +148,7 @@ test("sessionBrief extracts title, summary, last user and assistant text", async
   assert.equal(brief.lastAssistant, "latest answer");
 });
 
-test("runCard collapses three or more tool calls", () => {
+test("runCard always shows only the newest tool and folds the rest", () => {
   const tools = Array.from({ length: 5 }, (_, index) => ({
     callId: `c${index}`,
     name: "bash",
@@ -162,11 +162,13 @@ test("runCard collapses three or more tool calls", () => {
   const json = JSON.stringify(live);
   assert.match(json, /collapsible_panel/);
   assert.match(json, /4 个工具调用/);
+  assert.match(json, /✅ \*\*bash\*\* — echo 4/);
   const done = runCard({
     run: { sessionId: "s", status: "done", startedAt: Date.now(), tools, toolTotal: 5, text: "ok" },
     maxAnswerChars: 4_000,
   });
-  assert.match(JSON.stringify(done), /已结束/);
+  assert.match(JSON.stringify(done), /4 个工具调用（已结束）/);
+  assert.match(JSON.stringify(done), /✅ \*\*bash\*\* — echo 4/);
 });
 
 test("every card builder produces serializable JSON 2.0", () => {
