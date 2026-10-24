@@ -1,6 +1,6 @@
 {
   "name": "dsh-feishu-plugin",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "private": false,
   "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, streaming cards, model and permission switching, Web settings page, long connection with no public endpoint.",
   "type": "module",

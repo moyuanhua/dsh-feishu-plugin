@@ -59,27 +59,74 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
     },
   });
 
-  const wsClient = new Lark.WSClient({
-    appId,
-    appSecret,
-    domain: domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
-    loggerLevel: Lark.LoggerLevel.info,
-    logger,
-    onReady: () => log.info("飞书长连接已就绪（收到 ready）"),
-    onReconnecting: () => log.warn("飞书长连接正在重连"),
-    onReconnected: () => log.info("飞书长连接已重连"),
-    onError: (error) => log.error("飞书长连接错误", { error: error instanceof Error ? error.message : String(error) }),
-  });
-
+  let wsClient;
   let stopped = false;
-  void wsClient.start({ eventDispatcher: dispatcher }).catch((error) => {
-    if (!stopped) log.error("飞书长连接启动失败", { error: String(error) });
-  });
-  const statusTimer = setTimeout(() => {
+  let lastRestartAt = 0;
+  let watchdog;
+  let statusTimer;
+
+  const connect = () => {
+    wsClient = new Lark.WSClient({
+      appId,
+      appSecret,
+      domain: domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
+      loggerLevel: Lark.LoggerLevel.info,
+      logger,
+      // The SDK pings every ~120s. Without pingTimeout it never notices a
+      // half-open socket (NAT idle timeout, Wi-Fi switch, laptop sleep): the
+      // TCP connection stays ESTABLISHED, Feishu stops pushing events, and no
+      // close/error fires, so reconnection never starts. 30s of no inbound
+      // frame after a ping terminates the socket and drives the SDK reconnect.
+      wsConfig: { pingTimeout: 30 },
+      onReady: () => log.info("飞书长连接已就绪（收到 ready）"),
+      onReconnecting: () => log.warn("飞书长连接正在重连"),
+      onReconnected: () => log.info("飞书长连接已重连"),
+      onError: (error) => log.error("飞书长连接错误", { error: error instanceof Error ? error.message : String(error) }),
+    });
+    void wsClient.start({ eventDispatcher: dispatcher }).catch((error) => {
+      if (!stopped) log.error("飞书长连接启动失败", { error: String(error) });
+    });
+  };
+
+  const restart = (reason) => {
+    if (stopped) return;
+    const now = Date.now();
+    if (now - lastRestartAt < 120_000) return;
+    lastRestartAt = now;
+    log.warn("飞书长连接重启", { reason });
+    try {
+      wsClient?.close({ force: true });
+    } catch (error) {
+      log.warn("关闭飞书长连接失败", { error: String(error) });
+    }
+    connect();
+  };
+
+  connect();
+
+  watchdog = setInterval(() => {
+    if (stopped) return;
+    let status;
+    try {
+      status = wsClient?.getConnectionStatus?.();
+    } catch (error) {
+      log.warn("读取飞书长连接状态失败", { error: String(error) });
+      return;
+    }
+    const state = status?.state;
+    if (state === "failed" || state === "closed") {
+      restart(`state:${state}`);
+      return;
+    }
+    log.info("飞书长连接状态", { status });
+  }, 60_000);
+  watchdog.unref?.();
+
+  statusTimer = setTimeout(() => {
     if (stopped) return;
     try {
       log.info("飞书长连接状态", {
-        status: typeof wsClient.getConnectionStatus === "function" ? wsClient.getConnectionStatus() : "unknown",
+        status: typeof wsClient?.getConnectionStatus === "function" ? wsClient.getConnectionStatus() : "unknown",
       });
     } catch (error) {
       log.warn("读取飞书长连接状态失败", { error: String(error) });
@@ -92,8 +139,9 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
     stop() {
       stopped = true;
       clearTimeout(statusTimer);
+      clearInterval(watchdog);
       try {
-        wsClient.close({ force: true });
+        wsClient?.close({ force: true });
       } catch (error) {
         log.warn("关闭飞书长连接失败", { error: String(error) });
       }

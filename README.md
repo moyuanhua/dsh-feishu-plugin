@@ -200,6 +200,23 @@ debug 级别会额外记录：收到消息的路由（`threadId` / `rootId` / �
 grep -E '提交消息失败|回合结束|收到卡片操作|会话列表卡片刷新|消息路由' ~/.dsh/feishu-plugin/feishu.log | tail -50
 ```
 
+## 长连接自愈
+
+飞书 SDK 默认只发 ping、不检查 pong：Wi-Fi 切换、睡眠唤醒、NAT 超时后，TCP 可能仍显示
+ESTABLISHED，但飞书事件已经推不过来，也不会触发 close/reconnect，表现就是「机器人突然不说话」。
+
+插件现在：
+
+- 给 `WSClient` 配 `wsConfig.pingTimeout = 30`：ping 后 30 秒没有收到任何入站帧就主动断开并重连；
+- 每 60 秒检查 `getConnectionStatus()`，状态 `failed` / `closed` 时重建长连接；
+- 每分钟把连接状态写入 `feishu.log`，便于排查。
+
+如果仍出现不回复，先看：
+
+```sh
+grep -E '长连接状态|长连接重启|长连接错误' ~/.dsh/feishu-plugin/feishu.log | tail -20
+```
+
 ## 故障排查
 
 | 现象 | 处理 |
