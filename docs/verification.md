@@ -8,8 +8,8 @@
 |---|---|
 | git | `2.50.1 (Apple Git-155)`，已可用 |
 | 参考仓库 | `/Users/code/wps/opencode-feishu-plugin` 已 clone |
-| 插件构建 | `dsh-feishu-plugin` 0.3.0：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
-| 插件安装 | `dsh-feishu-plugin` 0.3.0（tarball）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
+| 插件构建 | `dsh-feishu-plugin` 0.3.1：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
+| 插件安装 | `dsh-feishu-plugin` 0.3.1（tarball）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
 | 飞书凭据校验 | tenant_access_token / bot info 返回 `code: 0` |
 | 飞书 WS（独立 SDK 测试） | 使用同一组凭据 `onReady` 触发，`ws client ready` |
 | 插件 WS 连接 | 日志出现「飞书长连接已就绪（收到 ready）」，连接状态 `state: connected` |

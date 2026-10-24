@@ -17,12 +17,11 @@
 | 图片 / 文件 | `attachments` / `fileUploads` |
 | 凭据 UI | `Config`（volatile + secret）+ `settings` + `plugins.bundle.config` / `plugins.row.config` 客户端页面 |
 
-## 当前状态
+## 功能状态
 
-本机已安装并启用：
-
-- 插件包：`dsh-feishu-plugin` 0.3.0（Host 半侧 + Client 配置页在同一个包里，已接上仓库原有的 npm OIDC 发布流水线）
-- 飞书长连接已启动；App ID / Secret 已通过 DSH Web 插件页写入
+- Host 半侧与 Web 配置页在同一个 npm 包里（`lib/index.js` + `lib/client.js`）；
+- 发布走仓库原有的 npm Trusted Publishing（OIDC + provenance）流水线；
+- 飞书长连接、审批、提问、模型/权限切换、图片/文件均已实现。
 
 ## 安装
 
@@ -35,7 +34,7 @@ dsh plugin --profile <profile> add dsh-feishu-plugin
 本地开发安装：
 
 ```sh
-dsh plugin --profile <profile> add /Users/code/wps/dsh-feishu-plugin
+dsh plugin --profile <profile> add /path/to/dsh-feishu-plugin
 ```
 
 发布与版本流程见 [docs/PUBLISHING.md](./docs/PUBLISHING.md)。本仓库沿用
@@ -165,7 +164,7 @@ DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本�
 ## 本地开发
 
 ```bash
-cd /Users/code/wps/dsh-feishu-plugin
+cd dsh-feishu-plugin
 pnpm install
 pnpm build      # esbuild 自包含 bundle → lib/index.js + lib/client.js
 pnpm test       # node:test
@@ -177,14 +176,12 @@ pnpm test       # node:test
 node --check client.js
 ```
 
-安装/更新（在本机 profile 中）：
+本地 tarball 安装/更新：
 
 ```text
-plugin_manager install_bundle  target=/Users/code/wps/dsh-feishu-plugin/dsh-feishu-plugin-0.3.0.tgz
+npm pack
+dsh plugin --profile <profile> add ./dsh-feishu-plugin-0.3.1.tgz
 ```
-
-> 本机 `pnpm` 不在 PATH，profile 的 `plugin-manager.pnpmCommand` 指向
-> `/Users/code/wps/.tools/pnpm`（corepack shim）。
 
 ## 已知限制
 
