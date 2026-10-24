@@ -39,7 +39,7 @@ export class RunCards {
     return run && !run.finished ? run : undefined;
   }
 
-  async beginPrompt(sessionId, { anchorMessageId, chatId }) {
+  async beginPrompt(sessionId, { anchorMessageId, chatId, threadId }) {
     const current = this.active(sessionId);
     if (current) {
       current.promptCount += 1;
@@ -51,6 +51,7 @@ export class RunCards {
       sessionId,
       chatId: chatId || view.chatId,
       anchorMessageId,
+      threadId,
       messageId: "",
       status: "starting",
       startedAt: Date.now(),

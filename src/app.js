@@ -77,6 +77,7 @@ export class FeishuApp {
     this.state = new StateStore({ file: config.stateFile, log });
     this.signer = createSigner(config.signSecret);
     this.dedup = new Dedup();
+    this.threadCreates = new Map();
     this.disposers = [];
     this.gateway = undefined;
     this.startedAt = Date.now();
@@ -269,8 +270,10 @@ export class FeishuApp {
     }
 
     if (sessionId) {
+      if (threadId) this.state.touchThread(threadId, message.messageId);
+      else if (rootId) this.state.touchThread(`root:${rootId}`, message.messageId);
       if (await this.questions.tryAnswerText(sessionId, message.text)) return;
-      await this.promptSession(sessionId, message, message.messageId, message.chatId);
+      await this.promptSession(sessionId, message, message.messageId, message.chatId, threadId);
       return;
     }
 
@@ -289,7 +292,20 @@ export class FeishuApp {
   }
 
   async createSessionInThread(message, threadId, rootId) {
-    try {
+    const pending = this.threadCreates.get(threadId);
+    if (pending) {
+      try {
+        const sessionId = await pending;
+        if (sessionId) {
+          this.state.touchThread(threadId, message.messageId);
+          await this.promptSession(sessionId, message, message.messageId, message.chatId, threadId);
+        }
+      } catch (error) {
+        this.log.warn("等待话题建会话失败", { threadId, error: describeError(error) });
+      }
+      return;
+    }
+    const creation = (async () => {
       const sessionId = await this.bridge.createSession({
         cwd: this.config.defaultDirectory,
         preset: this.config.defaultPermissionPreset,
@@ -304,13 +320,20 @@ export class FeishuApp {
         sessionId,
         chatId: message.chatId,
         openId: message.senderOpenId,
-        anchorMessageId: sent.messageId,
+        anchorMessageId: message.messageId,
         title: view.title,
       });
-      await this.promptSession(sessionId, message, sent.messageId, message.chatId);
+      return sessionId;
+    })();
+    this.threadCreates.set(threadId, creation);
+    try {
+      const sessionId = await creation;
+      await this.promptSession(sessionId, message, message.messageId, message.chatId, threadId);
     } catch (error) {
       this.log.warn("话题内自动建会话失败", { error: describeError(error) });
       await this.sender.replyCard(message.messageId, errorCard("无法创建会话", describeError(error)));
+    } finally {
+      this.threadCreates.delete(threadId);
     }
   }
 
@@ -554,6 +577,23 @@ export class FeishuApp {
               timer.unref?.();
             }),
           ]);
+    // One Feishu topic per DSH session: reopening a session must reuse its
+    // existing topic, otherwise two topics would route to the same session and
+    // the run card could answer in the wrong one.
+    const existingAlias = style === "created" ? undefined : this.state.threadForSession(sessionId);
+    const existing = existingAlias ? this.state.threads[existingAlias] : undefined;
+    if (existing?.anchorMessageId) {
+      const reused = await this.sender.replyCard(
+        existing.anchorMessageId,
+        openedSessionCard({ view, style: "resumed", brief }),
+      );
+      if (reused.ok) {
+        this.state.touchThread(existingAlias, existing.anchorMessageId);
+        this.log.info("复用已有话题", { sessionId, threadId: existingAlias });
+        return { sent: reused, threadId: existingAlias, view, brief, reused: true };
+      }
+      this.log.warn("复用已有话题失败，改为新开", { sessionId, error: reused.error });
+    }
     const sent = await this.sender.replyCard(anchorMessageId, openedSessionCard({ view, style, brief }), { replyInThread: true });
     if (!sent.ok) throw new Error(sent.error ?? "无法创建话题");
     const meta = sent.threadId ? undefined : await this.sender.getMessageMeta(sent.messageId);
@@ -588,7 +628,26 @@ export class FeishuApp {
         }
         index = parsed - 1;
       }
-      await this.openSessionThread(views[index].sessionId, message.messageId, message.chatId, message.senderOpenId, "resumed");
+      const opened = await this.openSessionThread(
+        views[index].sessionId,
+        message.messageId,
+        message.chatId,
+        message.senderOpenId,
+        "resumed",
+      );
+      if (opened.reused) {
+        await this.replyFor(
+          message,
+          compactResultCard({
+            title: "已回到原有话题",
+            template: "blue",
+            lines: [
+              `会话 **${truncate(opened.view.title, 80)}** 已经绑定过话题，这次直接回到原话题继续。`,
+              "为避免同一会话在两个话题里分叉，没有新开话题。",
+            ],
+          }),
+        );
+      }
     } catch (error) {
       await this.replyFor(message, errorCard("进入会话失败", describeError(error)));
     }
@@ -678,9 +737,24 @@ export class FeishuApp {
 
   // ---- prompt delivery ---------------------------------------------------
 
-  async promptSession(sessionId, message, anchorMessageId, chatId, overrideMode) {
+  async promptSession(sessionId, message, anchorMessageId, chatId, threadId, overrideMode) {
     const view = await this.bridge.viewOf(sessionId).catch(() => undefined);
-    const run = await this.runs.beginPrompt(sessionId, { anchorMessageId, chatId });
+    const active = this.runs.active(sessionId);
+    if (active && threadId && active.threadId && active.threadId !== threadId) {
+      // The session already has a live run card in another Feishu topic. Do not
+      // attach this turn to that card, or the answer would appear in the wrong topic.
+      this.log.warn("会话运行中但话题不同，已拒绝跨话题输出", {
+        sessionId,
+        activeThread: active.threadId,
+        messageThread: threadId,
+      });
+      await this.sender.replyCard(
+        anchorMessageId,
+        errorCard("会话正在另一个话题处理中", "请稍候，或回到正在处理的那个话题继续。"),
+      );
+      return;
+    }
+    const run = await this.runs.beginPrompt(sessionId, { anchorMessageId, chatId, threadId });
     try {
       const content = await this.buildPromptContent(sessionId, message);
       const mode = overrideMode ?? (view?.running || this.bridge.isRunning(sessionId) ? this.config.busyDelivery : "queue");
@@ -907,7 +981,10 @@ export class FeishuApp {
           "resumed",
         );
         const card = openedSessionCard({ view: opened.view, style: "entered", brief: opened.brief });
-        return this.respondCard(action, card, { type: "success", content: "已进入话题" });
+        return this.respondCard(action, card, {
+          type: "success",
+          content: opened.reused ? "已回到原有话题" : "已进入话题",
+        });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };
       }

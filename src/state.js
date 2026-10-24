@@ -124,7 +124,7 @@ export class StateStore {
     const alias = threadId || (rootId ? `root:${rootId}` : undefined);
     if (alias) {
       this.state.threads[alias] = link;
-      this.addSessionThread(sid, alias);
+      this.activateThread(sid, alias);
     }
     if (rootId) {
       this.state.roots[rootId] = alias ?? sid;
@@ -133,9 +133,27 @@ export class StateStore {
   }
 
   addSessionThread(sessionId, threadId) {
+    this.activateThread(sessionId, threadId);
+  }
+
+  /** Mark one thread as the session's active reply target (most recent first). */
+  activateThread(sessionId, alias) {
+    if (!sessionId || !alias) return;
     const current = this.state.sessionThreads[sessionId] ?? [];
-    if (!current.includes(threadId)) current.push(threadId);
-    this.state.sessionThreads[sessionId] = current;
+    this.state.sessionThreads[sessionId] = [...current.filter((item) => item !== alias), alias];
+  }
+
+  /**
+   * Remember where the user most recently spoke in a thread. Out-of-band cards
+   * (approvals, questions, errors) reply to this anchor so they land in the same
+   * Feishu topic as the conversation, and the thread becomes the active target.
+   */
+  touchThread(alias, anchorMessageId) {
+    const link = this.state.threads[alias];
+    if (!link) return;
+    if (anchorMessageId) link.anchorMessageId = str(anchorMessageId);
+    this.activateThread(link.sessionId, alias);
+    void this.save();
   }
 
   sessionForThread(threadId) {
