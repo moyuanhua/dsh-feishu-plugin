@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Feishu Bridge",
-    "description": "Bridge DeepSeek Harness into Feishu/Lark: one topic per session, in-card approvals and questions, p2p-read + send-as-bot scopes only, long connection with no public endpoint."
+    "description": "Use Feishu topics as DSH sessions with streaming cards, native approvals, model and permission switching over a long connection."
   }
 }

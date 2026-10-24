@@ -1,8 +1,8 @@
 {
   "name": "dsh-feishu-plugin",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": false,
-  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, long connection with no public endpoint. Minimal permissions: p2p read + send-as-bot; self-contained bundle, zero runtime deps.",
+  "description": "Feishu/Lark bridge for DeepSeek Harness (dsh): one Feishu topic = one dsh session, in-card approvals and questions, streaming cards, model and permission switching, Web settings page, long connection with no public endpoint.",
   "type": "module",
   "keywords": [
     "dsh",
@@ -28,31 +28,22 @@
     "dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "main": "lib/index.js",
-  "types": "lib/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./lib/index.d.ts",
-      "default": "./lib/index.js"
-    },
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg",
-    "./client": {
-      "default": "./lib/client.js"
-    }
+    "./icon": "./icon.svg"
   },
   "files": [
-    "LICENSE",
-    "NOTICE.md",
-    "README.md",
-    "cordis.patch.yml",
     "lib",
+    "cordis.patch.yml",
     "locale",
-    "icon.svg"
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
   ],
-  "bin": {
-    "dsh-feishu-plugin": "lib/cli.js"
-  },
   "publishConfig": {
     "access": "public"
   },
@@ -65,56 +56,28 @@
     "url": "https://github.com/moyuanhua/dsh-feishu-plugin/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --emitDeclarationOnly && node scripts/bundle.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
     "clean": "rm -rf lib",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm test"
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "client": {
+      "platform": "web",
+      "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-plugin-manager"
-      ],
-      "platform": "web"
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
-  "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.1 <5",
-    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-attachment": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-user-approval": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-user-questions": ">=0.2.0-rc.2 <0.3.0"
-  },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-questions": "0.2.0-rc.2",
-    "@larksuite/channel": "^0.7.1",
-    "@types/node": "^22.20.0",
-    "@vitest/coverage-v8": "^3.2.7",
-    "esbuild": "^0.28.2",
-    "typescript": "^5.9.0",
-    "vitest": "^3.2.0",
-    "zod": "^4.6.5"
+    "@deepseek-ai/schemastery": "~3.18.5",
+    "@larksuiteoapi/node-sdk": "1.76.0",
+    "esbuild": "0.25.10"
   }
 }

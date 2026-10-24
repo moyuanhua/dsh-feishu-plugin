@@ -1,0 +1,6 @@
+# pnpm 12 blocks dependency build scripts by default. These two packages are
+# build-time only: esbuild needs its native binary, protobufjs ships the Feishu
+# SDK's protobuf runtime. Neither runs at plugin runtime.
+allowBuilds:
+  esbuild: true
+  protobufjs: true

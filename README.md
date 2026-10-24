@@ -1,292 +1,195 @@
 # dsh-feishu-plugin
 
-**把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）接进飞书 / Lark。**
-在飞书里开一个话题就能派活给 dsh，代码跑完的结果、要你点头的权限审批、需要你补充的信息，
-全部以卡片形式回到飞书里 —— **不需要公网地址，不需要服务器**。
+把飞书接进 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)：**一个飞书话题 = 一个 DSH 会话**，审批、提问、模型与权限切换都在飞书卡片里完成。
 
-```
-你（飞书主聊天流）：帮我看下 wps 那个仓库的编译报错
-      ↓  AI 识别意图，自动把目录/模型/权限填好
-📝 新建会话（目录、模型、权限都可改）
-      ↓  点「创建会话」
-✅ 会话已创建 —— 这张卡自己变成话题根卡
-      ↓  在话题里继续说话
-⏳ 运行卡（流式输出 + 工具调用 + 强制停止）
-🔐 权限请求（点「允许一次」就继续）
-✅ 完成
-```
+这是 Host 插件（Cordis bundle），不是 OpenCode 插件；适配层完全使用 DSH 自己的服务：
 
-> 交互设计与 [`opencode-feishu-plugin`](https://github.com/moyuanhua/opencode-feishu-plugin) 一致，宿主换成 dsh 的 Cordis 插件体系。
-
----
-
-## 它能做什么
-
-| 能力 | 说明 |
+| 能力 | 使用的 DSH 服务 |
 |---|---|
-| **一个飞书话题 = 一个 dsh 会话** | 话题里发消息就是给这个会话派活；话题之间互不干扰，各自独立上下文 |
-| **AI 引导建会话** | 在主聊天流随口说一句要干什么，AI 判断意图、匹配目录与模型、预填表单，你确认即可 |
-| **会话列表** | `/sessions` 列出**全部** dsh 会话（包括你在桌面 App 里建的），带相对时间、目录、是否已绑话题，可翻页、可直接进入 |
-| **流式运行卡** | 模型输出、工具调用实时回显；工具块自动折叠；运行中可点「强制停止」 |
-| **卡片上审批** | 工具要权限时直接在飞书卡片上点，不用回到电脑前 |
-| **卡片上追问** | 模型需要你补充信息时发提问卡，点选项或直接回文字都行 |
-| **话题状态一目了然** | 话题根卡随状态变色：🟡 待审核 / 🧠 运行中 / ⏳ 待回复 / 🔴 失败 / ⏹ 已中断 / ✅ 完成 |
-| **图片与文件** | 直接把图或文件发进话题，会自动落盘并交给模型 |
-| **机器人菜单** | 飞书底部的 `new` / `sessions` 按钮等价于 `/new` / `/sessions` |
-| **看门狗** | 会话卡死会自动中断并通知你（等待你审批/回答的时间不算卡死） |
+| 会话创建 / 提示 / 取消 | `sessionController`（`create` / `prompt` / `cancel`） |
+| 会话列表 / 标题 / 目录 / 运行状态 | `sessionController.list` + Session projections |
+| 模型列表 / 切换 | `sessionController.modelCatalog` / `selectModel` |
+| 权限预设 | `permissionPresets.catalog` / `set` |
+| 审批 | `approval/request` waterfall（一次性授权） |
+| 模型反问 | `user-questions/request` waterfall |
+| 流式卡片 | `session/event`、`agent/assistant-stream`、`agent/status` |
+| 工作目录 | `workingDirectory.set` |
+| 图片 / 文件 | `attachments` / `fileUploads` |
+| 凭据 UI | `Config`（volatile + secret）+ `settings` + `plugins.bundle.config` / `plugins.row.config` 客户端页面 |
 
-## 为什么用它
+## 当前状态
 
-- **最小权限**：基础只申请两个 scope（`im:message.p2p_msg:readonly` 收单聊消息 +
-  `im:message:send_as_bot` 发卡片）。**机器人在平台层面就收不到群消息** —— 我们不订阅群消息事件，
-  也不申请它需要的 `im:message.group_msg`（敏感权限），不存在"被拉进群乱说话"的可能。
-  收图片/文件需要额外开一个 `im:message`（平台要求），**不用附件就别开**。
-- **不需要公网端点**：走飞书长连接（WebSocket），你在自己电脑上跑就行。
-- **单人对单机**：首个给机器人发消息的人自动绑定为 owner，之后其他人会被静默忽略；
-  配合飞书后台的"可用范围：仅本人"，边界由平台兜底。
-- **失败看得见**：模型报错会显示 ❌ 和**真实原因**，不会把失败装成成功。
+本机已安装并启用：
 
----
+- 插件包：`dsh-feishu-plugin` 0.3.0（Host 半侧 + Client 配置页在同一个包里，已接上仓库原有的 npm OIDC 发布流水线）
+- 飞书长连接已启动；App ID / Secret 已通过 DSH Web 插件页写入
 
-## 快速开始
+## 安装
 
-### 1. 在飞书开放平台建一个应用
-
-1. 到 [飞书开放平台](https://open.feishu.cn/app) 创建**企业自建应用**；
-2. **添加「机器人」能力**并**发布版本**（不发布的话长连接会一直卡在解析 bot 身份）；
-3. **事件与回调**：
-   - 订阅方式选 **使用长连接接收事件**（不要选 Webhook）；
-   - 订阅事件：`im.message.receive_v1`；
-   - （可选）订阅 **机器人自定义菜单事件** `application.bot.menu_v6`，否则底部菜单按钮点了没反应；
-   - 添加回调：`card.action.trigger`（卡片按钮必需，零权限要求）；
-4. **权限管理**按下表开权限；
-5. **可用范围**建议选「仅本人」；
-6. 发布版本，记下 **App ID** 与 **App Secret**。
-
-### 2. 安装插件
+从 npm 安装（发版后）：
 
 ```sh
 dsh plugin --profile <profile> add dsh-feishu-plugin
 ```
 
-装完即用。也可以在**侧栏 → 插件**页里图形化安装。
-
-> 本插件是**自包含 bundle**（飞书 SDK 已打进 `lib/`），`dependencies` 只有一个 Config schema
-> 包，**不会触发 pnpm 的构建脚本拦截**，所以不需要处理 `allowBuilds`。
-
-验证（不需要启动）：
+本地开发安装：
 
 ```sh
-dsh --profile <profile> --dump-config | grep -A3 '== dsh-feishu-plugin'
+dsh plugin --profile <profile> add /Users/code/wps/dsh-feishu-plugin
 ```
 
-### 3. 填配置
+发布与版本流程见 [docs/PUBLISHING.md](./docs/PUBLISHING.md)。本仓库沿用
+`moyuanhua/dsh-feishu-plugin` 原有的 **npm Trusted Publishing（OIDC + provenance）**
+流水线：推 `v*` tag 即发布。
 
-把凭据写进该 profile 的 `cordis.patch.yml`（路径 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`）：
+## 飞书后台配置
+
+1. 打开 [飞书开放平台](https://open.feishu.cn/app) → 创建企业自建应用。
+2. **添加应用能力 → 机器人**。
+3. **权限管理 → API 权限**：
+   - `im:message.p2p_msg:readonly`（必开：读取单聊消息）
+   - `im:message:send_as_bot`（必开：以机器人身份发消息 / 更新卡片）
+   - `im:message:readonly`（接收图片/文件时需要）
+4. **事件与回调 → 事件配置**：订阅方式选 **长连接**，添加 `im.message.receive_v1`。
+5. **事件与回调 → 回调配置**：订阅方式选 **长连接**，添加 `card.action.trigger`。
+6. **版本管理与发布**：创建版本并发布；可用范围建议「仅本人」。
+7. 记下 **App ID** 与 **App Secret**。
+
+不申请任何群权限：插件只处理 `p2p` 单聊，机器人物理上收不到群消息。
+
+## 在 DSH 里配置凭据（推荐）
+
+打开 DSH Web GUI → 左侧 **插件** → **已安装插件 → 飞书桥接**：插件详情页会直接显示凭据表单；组件行标题「飞书桥接 ›」也能打开同一配置页。
+
+- **App ID**：直接显示当前值，可修改；
+- **App Secret**：密文保存，不会回显；留空 = 保持不变，填入新值再保存；
+- 点 **保存** 后，Host 会重建飞书客户端并重新建立 WebSocket 长连接；已有会话不受影响。
+
+凭据保存在当前 profile 的 `cordis.patch.yml` 配置覆盖层（DSH 以 `0600` 权限维护），浏览器读取时 Secret 被 Redaction 遮蔽。
+
+也可以直接写 profile 配置（不推荐手改）：
 
 ```yaml
 - id: feishu
+  name: dsh-feishu-plugin
   config:
-    appId: cli_xxxxxxxxxxxx
-    appSecret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    # 其余字段见下方「配置项」，留空即用默认值
+    appId: cli_xxxxxxxx
+    appSecret: xxxxxxxx
 ```
 
-> 注意：patch 的 `config` 是**整体替换**而不是深合并 —— 覆盖这一行时要把它需要的字段都写出来。
-
-### 4. 启动并绑定
-
-```sh
-dsh --profile <profile>
-```
-
-看到 `飞书长连接已建立` 就成功了。然后在飞书里**给机器人发一条消息** ——
-**第一个发消息的人会自动成为 owner**，之后其他人会被静默忽略。
-
----
-
-## 怎么用
+## 使用方式
 
 ### 主聊天流 = 管理台
 
-**普通文本不会进入任何会话**，它只做一件事：理解你想干什么。
-
-```
-帮我看下 wps 那个仓库的编译报错
-```
-
-AI 会判断这是"要干活"，然后：
-- 匹配到 `/Users/code/wps` 这个目录（候选来自你允许的根目录下的子目录 + 历史会话目录）；
-- 用你当前的默认模型；
-- **把表单预填好发给你**，目录、模型、权限都能改，点「创建会话」即可。
-
-如果只是闲聊或问用法，它会回一张管理台提示卡，不会建会话。
-
-也可以直接敲 `/new` 打开空白表单。
-
-### 话题 = 任务会话
-
-在话题里发消息就是给这个会话派活：
-
-```
-你：这个报错怎么修
-🤖：（流式输出 + 工具调用，实时回显）
-🔐 权限请求：shell
-     [✅ 允许一次] [🔓 始终允许] [✅ 本会话内允许该工具] [❌ 拒绝]
-```
-
-**一张话题根卡**会跟着状态变色，一眼看出这个会话在干嘛。
-
-### 命令
-
-**主聊天流与话题内是两套命令**：建会话/会话管理在主聊天流做，任务操作用话题内命令。
-
-| 命令 | 在哪用 | 作用 |
-|---|---|---|
-| `/new [标题]`、`/form [标题]` | 主聊天流 | 打开发建会话表单 |
-| `/sessions`（别名 `/ls`） | 主聊天流 | 会话列表卡（翻页 / 进入 / 新建） |
-| `/use <序号\|会话id前缀>` | 主聊天流 | 切换当前会话 |
-| `/current` | 都可以 | 看当前（话题内为"本话题"）会话 |
-| `/stop` | 都可以 | 中断正在跑的任务 |
-| `/steer <文本>` | 都可以 | 打断当前步骤，立即插队发送 |
-| `/perm [档位]` | 都可以 | 查看 / 修改本会话的权限档位 |
-| `/help` | 都可以 | 显示帮助（**只列真正可用的命令**） |
-
-话题内敲建会话类命令，会提示你回主聊天流（`/new` `/sessions` `/use` 等）。
-
-**还没实现的命令**：`/model` `/cd` `/now` `/dir` `/cancel` `/resume`。
-它们**不会出现在 `/help` 里**（避免误导），但敲了会明确告诉你原因。
-其中"续聊历史会话"由**会话列表卡的「▶️ 进入 / ▶️ 再开」**承担。
-
-### 权限档位
-
-建会话时可以选四档，决定这个会话里工具调用要怎样审批：
-
-| 档位 | 含义 |
+| 命令 | 作用 |
 |---|---|
-| 🔒 只读 | 禁止编辑 / 执行 / 写入，最安全 |
-| ✏️ 可编辑 | 允许改文件；执行命令需你审批（默认） |
-| ⚠️ 高风险审批 | 继承默认规则，对 shell / 编辑 / 外部目录逐次审批 |
-| 🔓 完全信任 | 放行全部操作，请谨慎使用 |
+| `/new [标题]` | 打开建会话表单（目录 / 模型 / 权限预设） |
+| `/sessions`（`/ls`） | 会话列表，可翻页、进入话题 |
+| `/open <序号>` / `/resume [序号]` | 为选中的会话新开一个飞书话题 |
+| `/help` | 命令帮助 |
 
-「本会话内允许该工具」只影响**当前会话**，其他会话不受影响；改权限档位会清空这个放行表。
+主聊天流直接发普通文本不会进入任何会话；会回一张管理台卡片，可一键「用这条消息新建会话」。
 
-### 发图片和文件
+### 话题内 = 一个 DSH 会话
 
-直接把图片或文件发进话题即可，会自动下载并交给模型；下载失败不会阻断这一轮，只会在正文里附一行说明。
+直接发文本即对话；支持图片 / 文件（需 `im:message:readonly`）。
 
-> 需要开 `im:message` 权限（见「权限清单」）。没开的话附件会被跳过，文字照常收到。
+| 命令 | 作用 |
+|---|---|
+| `/stop` | 取消当前回合 |
+| `/current` | 查看当前会话（标题 / 目录 / 模型 / 权限 / 状态） |
+| `/model [关键词]` | 切换到模型；无参数发选择卡片 |
+| `/perm [预设名]` | 切换 DSH 权限预设（沙箱 + 审批策略） |
+| `/cd <绝对路径>` | 迁移会话工作目录 |
+| `/rename <标题>` | 重命名会话 |
+| `/steer <文本>` | 立即插队 |
+| `/queue <文本>` | 排队 |
+| `/cancel` | 清空未提交的临时状态 |
+| `/help` | 帮助 |
 
----
+### 审批
+
+DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本身只提供一次性授权，没有「始终允许」；需要长期放行请在 DSH Web 端切换权限预设（例如 Full access）。
+
+### 模型反问
+
+`ask_user_question` 会变成飞书选项卡片；点按钮作答，或直接在话题里回复文字（单选/无选项问题）。多选题请按卡片提示回复选项标签。
 
 ## 配置项
 
-完整字段与注释见 [`cordis.patch.yml`](cordis.patch.yml)。常用字段：
+`feishu` 行的 `config`：
 
-| 字段 | 默认值 | 说明 |
+| 字段 | 默认 | 说明 |
 |---|---|---|
-| `appId` / `appSecret` | — | 飞书应用凭据（必需，否则插件保持禁用） |
-| `appSecretRef` | — | 改用凭据库里的名字（不把密钥写进配置文件） |
-| `domain` | `https://open.feishu.cn` | 国际版填 `https://open.larksuite.com` |
-| `allowedRoots` | `[用户家目录]` | 允许作为会话工作目录的根；**越界一律拒绝** |
-| `cwd` | `allowedRoots[0]` | 新会话的默认工作目录 |
-| `allowUsers` | `[]` | open_id 白名单；空 = 仅首个发消息者绑定的 owner |
-| `groupEnabled` | `false` | 群入口开关（默认关，且平台上收不到群消息） |
-| `permissionGate` | `gate` | 全局审批门：`off` / `notify` / `gate` / `lockdown` |
-| `allowTools` / `denyTools` | 读类工具免审批 | 免审批白名单（支持 `prefix*`）与强制拒绝 |
-| `busyDelivery` | `steer` | 会话忙时新消息：`steer` 立即插队 / `queue` 排队 |
-| `intentRouting` | `true` | 主聊天流的 AI 意图识别；关掉就只回管理台提示卡 |
-| `intentTimeoutMs` | `15000` | 意图识别超时（超时降级为空表单，不影响使用） |
-| `sessionPageSize` | `8` | 会话列表每页行数（5–20） |
-| `provider` / `model` | 用 dsh 默认模型 | 想给飞书单独指定模型时**两个都要写** |
-| `staleExecutionMs` | `300000` | 看门狗阈值；`0` 关闭 |
-| `approvalTtlMs` | `600000` | 审批按钮有效期 |
-| `cardThrottleMs` | `700` | 运行卡更新节流（飞书限同一卡片 ≤10 次/秒） |
-| `logLevel` / `logFile` | `info` / 关 | 排错时设 `debug` 与 `logFile: true` |
+| `appId` / `appSecret` | — | 飞书应用凭据；UI 可编辑（volatile + secret） |
+| `domain` | `feishu` | `feishu` 或 `lark` |
+| `allowUsers` | `[]` | open_id 白名单；空 = 首个发消息者绑定为 owner |
+| `allowedRoots` | `[家目录, 当前目录]` | 允许作为会话工作目录的根 |
+| `defaultDirectory` | 当前目录 | 新会话默认工作目录 |
+| `defaultModel` | DSH 默认 | `{ provider, model }` |
+| `defaultPermissionPreset` | DSH 默认 | 新会话权限预设 |
+| `busyDelivery` | `queue` | 忙碌时 `queue` 排队 / `steer` 插队 |
+| `stream` | `true` | 是否流式更新卡片 |
+| `streamThrottleMs` | `700` | 卡片更新节流 |
+| `acceptAttachments` | `true` | 接收图片/文件 |
+| `attachmentMaxBytes` | 20MB | 单附件上限 |
+| `approvalTtlMs` | 10 分钟 | 审批卡片有效期 |
+| `questionTtlMs` | 10 分钟 | 提问卡片有效期 |
+| `staleMessageMs` | 120 秒 | 过期消息忽略窗口 |
+| `sessionPageSize` | 8 | 会话列表每页条数 |
+| `maxAnswerChars` | 12000 | 单卡回答截断 |
+| `logLevel` | `info` | 日志级别 |
+| `logFile` | `~/.dsh/feishu-plugin/feishu.log` | 日志文件；`false` 关闭 |
 
-**建会话的两个前置条件**（拿不到就**拒绝建会话**并说明原因，而不是建一个跑不起来的会话）：
+## 与 OpenCode 插件的差异
 
-| 关注点 | 取值顺序 |
+完整说明见 [docs/adaptation.md](./docs/adaptation.md)。要点：
+
+- **权限**：DSH 只有 `allowed-once` / `rejected`，没有 OpenCode 的 always/session 授权；
+- **模型**：DSH 模型目录来自 `llm` / `sessionController`，不再自建 provider 列表；
+- **会话**：DSH 的 Session ID、标题、cwd、运行状态来自 Session 投影；
+- **开发方案**：DSH Cordis Host 插件 + 同包 Client 模块，不是 OpenCode 的 `Plugin.define`；
+- **网关收敛**：DSH 是单 Host 进程，不需要 OpenCode 那种跨 location 的 leader 选举。
+
+## 故障排查
+
+| 现象 | 处理 |
 |---|---|
-| 模型 | 配置 `provider`+`model` → dsh 的默认模型 |
-| 工作目录 | 表单里选的 → 配置 `cwd` → `allowedRoots[0]`，再过越界与系统目录校验 |
+| 发消息没反应 | 应用是否已发布；事件/回调是否都选长连接；`im:message.p2p_msg:readonly` 是否开通 |
+| 日志看哪里 | `~/.dsh/feishu-plugin/feishu.log` |
+| 改凭据后不生效 | 在插件页保存后看日志是否出现「飞书凭据已更新，长连接已重启」 |
+| 图片/文件收不到 | 开 `im:message:readonly` 并重新发布版本 |
+| 审批卡收不到 | 该会话必须是从飞书发起的（有话题映射）；Web 本地会话不接管 |
+| 点按钮提示凭证无效 | 审批 token 过期（默认 10 分钟）或操作者不在允许名单 |
 
----
+## 本地开发
 
-## 权限清单（部署时照做）
-
-| 项 | 值 |
-|---|---|
-| API 权限（必开） | `im:message.p2p_msg:readonly` —— 接收用户发给机器人的单聊消息 |
-| API 权限（必开） | `im:message:send_as_bot` —— 以应用身份发消息（所有卡片都靠它） |
-| **API 权限（要收图片/文件就必开）** | **`im:message`** —— 官方《获取消息中的资源文件》要求 `im:message` / `im:message:readonly` / `im:message.history:readonly` **任一即可**。**不开则只收得到文字，附件会被跳过** |
-| 事件订阅方式 | **使用长连接接收事件**（不要选 Webhook） |
-| 订阅事件 | `im.message.receive_v1` |
-| 订阅事件（可选） | `application.bot.menu_v6` —— 机器人自定义菜单，不订阅则底部菜单按钮点了没反应 |
-| 回调 | `card.action.trigger` —— 卡片按钮必需（零权限要求） |
-| 机器人能力 | 必须开启并**发布版本** |
-| 可用范围 | 建议「仅本人」—— 单人边界的平台层保证 |
-| **不要申请** | 任何 `im:message.group_msg*`（获取群组中所有消息，敏感权限）与 `im:message.group_at_msg*` |
-
-> **`im:message` 名字里带"群组"，但不会让机器人收到群消息。**
-> 它只影响能否**通过 API 读取**消息；能不能**收到**群消息由**事件权限**决定 ——
-> 我们既不订阅群消息事件、也不申请 `im:message.group_msg`，所以机器人在平台层面就收不到群消息。
->
-> 如果连附件也不需要，那就**不要开 `im:message`**，权限可以收到最紧；插件会自动降级为只收文字。
-
----
-
-## 常见问题
-
-**装了但没生效？**
-`dsh --profile <profile> --dump-config | grep '== dsh-feishu-plugin'` 看层在不在。
-不在的话多半是 `ERR_PNPM_IGNORED_BUILDS`（见「安装」里的说明）。
-
-**在飞书里发消息没反应？**
-1. 看日志有没有 `飞书长连接已建立`；
-2. 确认应用**已开启机器人能力并发布版本**（否则连 bot 身份都解析不出来）；
-3. 确认你是 owner 或白名单用户 —— **非白名单用户会被静默忽略**（不回复，这是有意的）；
-4. 把 `logLevel` 设成 `debug` 再看。
-
-**点了机器人底部菜单没反应？**
-需要在开发者后台订阅 `application.bot.menu_v6`。没订阅的话事件根本不会推过来，
-日志里也不会有"收到机器人菜单事件"。
-
-**消息发出去了，但卡片停在"运行中"不动？**
-模型或网络卡住时看门狗会在 `staleExecutionMs`（默认 5 分钟）后自动中断并通知你。
-等待你审批或回答的时间**不算卡死**，不会被误杀。
-
-**发图片/文件给机器人，它说收不到？**
-去开发者后台加 **`im:message`** 权限并重新发布版本 —— 《获取消息中的资源文件》要求
-`im:message` / `im:message:readonly` / `im:message.history:readonly` 任一。
-没这个权限时附件会被跳过，但**文字消息照常工作**（这是有意的降级，不会把整轮弄挂）。
-
-**报错显示 ❌ 和一个我看不懂的原因？**
-卡片上那行 ⚠️ 是模型/服务商返回的**原始错误**（如 `Insufficient Balance（QUOTA）`）。
-这是有意保留的 —— 比"失败了但不说为什么"有用。
-
----
-
-## 参与开发
-
-```sh
+```bash
+cd /Users/code/wps/dsh-feishu-plugin
 pnpm install
-pnpm run typecheck
-pnpm test              # 602 个用例
-pnpm run test:coverage # 覆盖率门槛写在 vitest.config.ts
-pnpm run build
+pnpm build      # esbuild 自包含 bundle → lib/index.js + lib/client.js
+pnpm test       # node:test
 ```
 
-设计文档（写给维护者，不是使用说明）：
+配置页 Client 模块（与 Host 同一个包，构建时复制为 `lib/client.js`）：
 
-| 文档 | 内容 |
-|---|---|
-| [docs/REDESIGN.md](docs/REDESIGN.md) | 分层与宿主接缝：哪些归 dsh、哪些归插件，终态契约 |
-| [docs/DESIGN-SESSION-MANAGEMENT.md](docs/DESIGN-SESSION-MANAGEMENT.md) | 会话管理面（管理台 / 话题 / AI 引导 / 列表 / 根卡状态）的设计与实现记录 |
-| [docs/CONFIG-UI-AND-DISTRIBUTION.md](docs/CONFIG-UI-AND-DISTRIBUTION.md) | 配套配置界面与分发方案（提案） |
-| [docs/PUBLISHING.md](docs/PUBLISHING.md) | 发布 runbook（首次 bootstrap / 后续打 tag / DSH 版本兼容） |
-| [NOTICE.md](NOTICE.md) | 与 `opencode-feishu-plugin` 的来源与授权说明 |
+```bash
+node --check client.js
+```
 
-## 许可
+安装/更新（在本机 profile 中）：
 
-MIT，Copyright (c) 2026 moyuanhua。
+```text
+plugin_manager install_bundle  target=/Users/code/wps/dsh-feishu-plugin/dsh-feishu-plugin-0.3.0.tgz
+```
+
+> 本机 `pnpm` 不在 PATH，profile 的 `plugin-manager.pnpmCommand` 指向
+> `/Users/code/wps/.tools/pnpm`（corepack shim）。
+
+## 已知限制
+
+- 只处理单聊（p2p），不处理群聊 / 群话题。
+- 一个飞书话题只能映射一个 DSH 会话；进入已有会话会新开一个话题。
+- 审批只有一次性授权；长期放行依赖 DSH 权限预设。
+- 音频 / 视频 / 表情包只显示占位文本。
+- 长回答在单张卡片内截断；完整内容看 DSH Web 会话。
