@@ -5,7 +5,7 @@
 
 ## 已配置好的部分
 
-- npm 包名：`dsh-feishu-plugin`（已发布到 0.2.2，0.3.1 为本次重写）
+- npm 包名：`dsh-feishu-plugin`（已发布到 0.2.2，0.3.4 为本次重写）
 - Trusted Publisher：`owner=moyuanhua`、`repo=dsh-feishu-plugin`、`workflow=publish.yml`
 - `.github/workflows/publish.yml`：推 `v*` tag 或手动触发
 - `.github/workflows/ci.yml`：push / PR 上跑 build + test
@@ -67,7 +67,7 @@ NOTICE.md
 `package.json`：
 
 ```json
-"engines": { "dsh": ">=0.2.0-rc.2 <0.3.1" }
+"engines": { "dsh": ">=0.2.0-rc.2 <0.3.4" }
 ```
 
-DSH 出 0.2.x 不用改；出 0.3.1 需要放宽区间后再发版。
+DSH 出 0.2.x 不用改；出 0.3.4 需要放宽区间后再发版。

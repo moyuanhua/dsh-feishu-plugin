@@ -66,7 +66,9 @@ export function resolveConfig(raw) {
   }
 
   const defaultDirectory = expandHome(expandEnv(unwrap(config.defaultDirectory))) || process.cwd();
-  const logLevel = LEVELS.has(str(unwrap(config.logLevel))) ? str(unwrap(config.logLevel)) : "info";
+  const debugLog = bool(unwrap(config.debugLog), false);
+  const configuredLevel = LEVELS.has(str(unwrap(config.logLevel))) ? str(unwrap(config.logLevel)) : "info";
+  const logLevel = debugLog ? "debug" : configuredLevel;
   const env = isRecord(config.env) ? config.env : undefined;
 
   return {
@@ -97,6 +99,7 @@ export function resolveConfig(raw) {
     staleMessageMs: number(unwrap(config.staleMessageMs), 120_000, 0, 600_000),
     sessionPageSize: number(unwrap(config.sessionPageSize), 8, 4, 20),
     maxAnswerChars: number(unwrap(config.maxAnswerChars), 12_000, 1_000, 28_000),
+    debugLog,
     logLevel,
     logFile,
     dataDir,

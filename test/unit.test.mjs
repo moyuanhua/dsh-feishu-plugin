@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parseCommand } from "../src/commands.js";
 import { createSigner } from "../src/security.js";
 import { StateStore } from "../src/state.js";
+import { DshBridge } from "../src/dsh/controller.js";
 import { isUnder, validateDirectory } from "../src/utils.js";
 import {
   approvalCard,
@@ -96,6 +97,25 @@ test("owner binding and allowlist", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+});
+
+test("DshBridge.prompt passes the AbortSignal required by prompt admission", async () => {
+  let captured;
+  const controller = {
+    async prompt(request, signal) {
+      captured = { request, signal };
+      return { accepted: true };
+    },
+  };
+  const bridge = new DshBridge(
+    { get: (key) => (key === "sessionController" ? controller : undefined) },
+    { allowedRoots: ["/tmp"], defaultDirectory: "/tmp" },
+    { debug() {}, info() {}, warn() {}, error() {} },
+  );
+  await bridge.prompt("session-1", [{ type: "text", text: "hi" }], "queue", "req-1");
+  assert.equal(captured.request.sessionId, "session-1");
+  assert.equal(captured.request.mode, "queue");
+  assert.ok(captured.signal instanceof AbortSignal);
 });
 
 test("every card builder produces serializable JSON 2.0", () => {

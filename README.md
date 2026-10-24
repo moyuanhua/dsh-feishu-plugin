@@ -60,6 +60,9 @@ dsh plugin --profile <profile> add /path/to/dsh-feishu-plugin
 
 打开 DSH Web GUI → 左侧 **插件** → **已安装插件 → 飞书桥接**：插件详情页会直接显示凭据表单；组件行标题「飞书桥接 ›」也能打开同一配置页。
 
+- **默认工作目录**：输入框 + 「选择目录」按钮（调用 DSH 目录选择器）；
+- **默认工作模型**：下拉选择 DSH 当前可用模型；
+- **默认工作权限**：下拉选择 DSH 权限预设；
 - **App ID**：直接显示当前值，可修改；
 - **App Secret**：密文保存，不会回显；留空 = 保持不变，填入新值再保存；
 - 点 **保存** 后，Host 会重建飞书客户端并重新建立 WebSocket 长连接；已有会话不受影响。
@@ -124,9 +127,9 @@ DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本�
 | `domain` | `feishu` | `feishu` 或 `lark` |
 | `allowUsers` | `[]` | open_id 白名单；空 = 首个发消息者绑定为 owner |
 | `allowedRoots` | `[家目录, 当前目录]` | 允许作为会话工作目录的根 |
-| `defaultDirectory` | 当前目录 | 新会话默认工作目录 |
-| `defaultModel` | DSH 默认 | `{ provider, model }` |
-| `defaultPermissionPreset` | DSH 默认 | 新会话权限预设 |
+| `defaultDirectory` | 当前目录 | **新会话默认工作目录**（插件页可「选择目录」，也用于话题内自动建会话） |
+| `defaultModel` | DSH 默认 | **新会话默认模型** `{ provider, model }`；插件页下拉选择 |
+| `defaultPermissionPreset` | DSH 默认 | **新会话默认权限预设**；插件页下拉选择 |
 | `busyDelivery` | `queue` | 忙碌时 `queue` 排队 / `steer` 插队 |
 | `stream` | `true` | 是否流式更新卡片 |
 | `streamThrottleMs` | `700` | 卡片更新节流 |
@@ -137,7 +140,8 @@ DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本�
 | `staleMessageMs` | 120 秒 | 过期消息忽略窗口 |
 | `sessionPageSize` | 8 | 会话列表每页条数 |
 | `maxAnswerChars` | 12000 | 单卡回答截断 |
-| `logLevel` | `info` | 日志级别 |
+| `debugLog` | `false` | **调试日志开关**（插件页可切换）；开 = 强制 `debug` 级别 |
+| `logLevel` | `info` | 基础日志级别；`debugLog` 关闭时生效 |
 | `logFile` | `~/.dsh/feishu-plugin/feishu.log` | 日志文件；`false` 关闭 |
 
 ## 与 OpenCode 插件的差异
@@ -149,6 +153,29 @@ DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本�
 - **会话**：DSH 的 Session ID、标题、cwd、运行状态来自 Session 投影；
 - **开发方案**：DSH Cordis Host 插件 + 同包 Client 模块，不是 OpenCode 的 `Plugin.define`；
 - **网关收敛**：DSH 是单 Host 进程，不需要 OpenCode 那种跨 location 的 leader 选举。
+
+## 调试日志
+
+有两种方式打开：
+
+1. **插件页开关（推荐）**：DSH Web → 插件 → 飞书桥接 → 勾选「调试日志」，保存即生效；
+2. 配置：`feishu` 行的 `config.debugLog: true`。
+
+然后：
+
+```sh
+tail -f ~/.dsh/feishu-plugin/feishu.log
+```
+
+debug 级别会额外记录：收到消息的路由（`threadId` / `rootId` / 命中的 `sessionId`）、
+卡片操作（kind / messageId / chatId）、会话列表刷新结果、prompt 提交失败的原始错误与 stack。
+飞书 SDK 的 `[ws]` 连接日志也走同一文件。
+
+常用排查：
+
+```sh
+grep -E '提交消息失败|回合结束|收到卡片操作|会话列表卡片刷新|消息路由' ~/.dsh/feishu-plugin/feishu.log | tail -50
+```
 
 ## 故障排查
 
@@ -180,7 +207,7 @@ node --check client.js
 
 ```text
 npm pack
-dsh plugin --profile <profile> add ./dsh-feishu-plugin-0.3.1.tgz
+dsh plugin --profile <profile> add ./dsh-feishu-plugin-0.3.4.tgz
 ```
 
 ## 已知限制

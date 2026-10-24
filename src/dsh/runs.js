@@ -116,6 +116,7 @@ export class RunCards {
       status,
       ms: run.finishedAt - run.startedAt,
       tools: run.tools.length,
+      error,
     });
   }
 

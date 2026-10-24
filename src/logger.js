@@ -15,7 +15,7 @@ function formatMeta(meta) {
 }
 
 export function createLogger({ level = "info", file } = {}) {
-  const threshold = ORDER[level] ?? ORDER.info;
+  let threshold = ORDER[level] ?? ORDER.info;
   let ready = false;
 
   const ensureDir = () => {
@@ -46,6 +46,9 @@ export function createLogger({ level = "info", file } = {}) {
   };
 
   return {
+    setLevel(nextLevel) {
+      if (ORDER[nextLevel]) threshold = ORDER[nextLevel];
+    },
     debug: (message, meta) => write("debug", message, meta),
     info: (message, meta) => write("info", message, meta),
     warn: (message, meta) => write("warn", message, meta),

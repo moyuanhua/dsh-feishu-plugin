@@ -8,13 +8,16 @@
 |---|---|
 | git | `2.50.1 (Apple Git-155)`，已可用 |
 | 参考仓库 | `/Users/code/wps/opencode-feishu-plugin` 已 clone |
-| 插件构建 | `dsh-feishu-plugin` 0.3.1：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
-| 插件安装 | `dsh-feishu-plugin` 0.3.1（tarball）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
+| 插件构建 | `dsh-feishu-plugin` 0.4.0：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
+| 插件安装 | `dsh-feishu-plugin` 0.4.0（tarball）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
 | 飞书凭据校验 | tenant_access_token / bot info 返回 `code: 0` |
 | 飞书 WS（独立 SDK 测试） | 使用同一组凭据 `onReady` 触发，`ws client ready` |
 | 插件 WS 连接 | 日志出现「飞书长连接已就绪（收到 ready）」，连接状态 `state: connected` |
-| 配置页合并 | 同一包内 Client 模块注册配置页；插件详情页直接显示 App ID / Secret 表单，组件行标题也可打开 |
+| 配置页合并 | 同一包内 Client 模块注册配置页；插件详情页直接显示 App ID / Secret / 调试日志表单 |
 | 新图标 | DSH 鲸鱼 + 飞书蓝气泡构图，128px / 48px 两档渲染检查通过 |
+| 卡片按钮刷新 | 卡片更新改为在 `card.action.trigger` 回调响应里返回 `card`（并行延迟 patch 兜底），避免 Feishu 在回调结束后用原卡片覆盖 |
+| 调试开关 | `debugLog` volatile 字段：插件页勾选即强制 debug 级别，日志仍写 `feishu.log` |
+| 新会话默认值 | `defaultDirectory` / `defaultModel` / `defaultPermissionPreset` 均可从插件页编辑；目录走 `uiWorkspace.pickDirectory()`，模型/权限来自 DSH catalog |
 | npm 包结构 | `npm pack --dry-run`：10 个文件，含 `lib/index.js`、`lib/client.js`、patch、locale、icon、README/LICENSE/NOTICE |
 | Web 配置页 | headless Chrome 实测：插件页 → 飞书桥接 → 配置，App ID 回显正确 |
 | 配置页保存 | 通过页面写入 App Secret，提示「已保存」 |

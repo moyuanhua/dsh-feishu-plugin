@@ -6,16 +6,18 @@ export const Config = Schema.object({
   // plugin's page and applied live, without remounting the bundle.
   appId: Schema.string().default("").volatile(),
   appSecret: Schema.string().role("secret").default("").volatile(),
+  /** Debug-log switch, editable from the same page. */
+  debugLog: Schema.boolean().default(false).volatile(),
 
   domain: Schema.union(["feishu", "lark"]).default("feishu"),
   allowUsers: Schema.array(Schema.string()).default([]),
   allowedRoots: Schema.array(Schema.string()).default([]),
-  defaultDirectory: Schema.string().default(""),
+  defaultDirectory: Schema.string().default("").volatile(),
   defaultModel: Schema.object({
     provider: Schema.string().default(""),
     model: Schema.string().default(""),
-  }).default({ provider: "", model: "" }),
-  defaultPermissionPreset: Schema.string().default(""),
+  }).default({ provider: "", model: "" }).volatile(),
+  defaultPermissionPreset: Schema.string().default("").volatile(),
   busyDelivery: Schema.union(["queue", "steer"]).default("queue"),
   acceptAttachments: Schema.boolean().default(true),
   attachmentMaxBytes: Schema.number().default(20 * 1024 * 1024),

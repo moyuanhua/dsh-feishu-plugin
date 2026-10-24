@@ -13,7 +13,13 @@
         allowUsers: []
         allowedRoots: []
         defaultDirectory: ''
+        defaultModel:
+          provider: ''
+          model: ''
+        defaultPermissionPreset: ''
         busyDelivery: queue
         acceptAttachments: true
         stream: true
         logLevel: info
+        # Volatile switch on the plugin page; keeps the same log file.
+        debugLog: false

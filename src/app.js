@@ -172,6 +172,7 @@ export class FeishuApp {
         next.appSecret !== this.config.appSecret ||
         next.domain !== this.config.domain;
       this.config = next;
+      this.log.setLevel?.(next.logLevel);
       this.runs.config = next;
       const signer = createSigner(next.signSecret);
       this.signer = signer;
@@ -221,6 +222,14 @@ export class FeishuApp {
       return;
     }
 
+    this.log.debug("收到飞书消息", {
+      messageId: message.messageId,
+      chatType: message.chatType,
+      threadId: message.threadId,
+      rootId: message.rootId,
+      textPreview: truncate(message.text, 80),
+      attachments: message.attachments.length,
+    });
     const command = parseCommand(message.text);
     let threadId = message.threadId;
     let rootId = message.rootId;
@@ -249,6 +258,13 @@ export class FeishuApp {
       });
     }
 
+    this.log.debug("消息路由", {
+      command: command?.name,
+      sessionId,
+      threadId,
+      rootId,
+      hasSession: Boolean(sessionId),
+    });
     if (command) {
       await this.handleCommand({ message, command, sessionId, threadId, rootId });
       return;
@@ -299,6 +315,7 @@ export class FeishuApp {
       const sessionId = await this.bridge.createSession({
         cwd: this.config.defaultDirectory,
         preset: this.config.defaultPermissionPreset,
+        model: this.defaultModelSelection(),
       });
       const view = await this.bridge.viewOf(sessionId);
       const sent = await this.sender.replyCard(message.messageId, openedSessionCard({ view, style: "created" }));
@@ -514,7 +531,12 @@ export class FeishuApp {
     try {
       const extras = await this.formExtras();
       const card = newSessionFormCard({
-        values: { title: title ?? "", dir: "" },
+        values: {
+          title: title ?? "",
+          dir: this.config.defaultDirectory ?? "",
+          model: this.defaultModelSelection(),
+          perm: this.config.defaultPermissionPreset,
+        },
         models: extras.models,
         defaultModel: extras.defaultModel,
         perms: extras.perms,
@@ -578,6 +600,17 @@ export class FeishuApp {
     }
   }
 
+  defaultModelSelection() {
+    const model = this.config.defaultModel;
+    return model?.provider && model?.model ? { provider: model.provider, model: model.model } : undefined;
+  }
+
+  defaultSessionTitle() {
+    const now = new Date();
+    const pad = (n) => (n < 10 ? `0${n}` : String(n));
+    return `新会话 ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  }
+
   async createFromForm(action) {
     const form = isRecord(action.formValue) ? action.formValue : {};
     const values = {
@@ -596,20 +629,24 @@ export class FeishuApp {
     const cwd = selectedDir || this.config.defaultDirectory;
 
     try {
+      const title = values.title || this.defaultSessionTitle();
       const sessionId = await this.bridge.createSession({
         cwd,
-        title: values.title || undefined,
-        model,
+        title,
+        model: model ?? this.defaultModelSelection(),
         preset: values.perm || this.config.defaultPermissionPreset,
       });
-      await this.openSessionThread(sessionId, action.messageId, action.chatId, action.operatorOpenId, "created");
-      if (action.messageId) {
-        await this.sender.patchCard(
-          action.messageId,
-          createdHintCard("✅ 会话已创建", [`已在飞书里开好话题，直接去话题里发消息即可。`, `会话 ID：\`${shortId(sessionId)}\``]),
-        );
-      }
-      return { toast: { type: "success", content: "会话已创建" } };
+      const opened = await this.openSessionThread(
+        sessionId,
+        action.messageId,
+        action.chatId,
+        action.operatorOpenId,
+        "created",
+      );
+      // Like the OpenCode plugin: the submitted form card itself turns into
+      // the session card; the separate card in the new topic is its root.
+      const card = openedSessionCard({ view: opened.view, style: "created" });
+      return this.respondCard(action, card, { type: "success", content: "会话已创建" });
     } catch (error) {
       this.log.warn("表单建会话失败", { error: describeError(error) });
       const extras = await this.formExtras().catch(() => ({ models: [], perms: [], dirs: [], defaultModel: undefined }));
@@ -652,7 +689,14 @@ export class FeishuApp {
       );
       this.log.info("已提交飞书消息", { sessionId, mode, parts: content.length, messageId: message.messageId });
     } catch (error) {
-      this.log.warn("提交消息失败", { sessionId, error: describeError(error) });
+      this.log.warn("提交消息失败", {
+        sessionId,
+        mode,
+        parts: content.length,
+        error: describeError(error),
+        errorName: error instanceof Error ? error.name : typeof error,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       this.runs.finish(run, "error", describeError(error));
     }
   }
@@ -781,7 +825,29 @@ export class FeishuApp {
 
   // ---- card actions ------------------------------------------------------
 
+  /**
+   * Return a card from the callback response (authoritative) and also patch
+   * once after the response settles. Feishu applies the response card, but a
+   * delayed patch keeps the state durable if a client missed the response.
+   */
+  respondCard(action, card, toast) {
+    if (action.messageId) {
+      const timer = setTimeout(() => {
+        void this.sender.patchCard(action.messageId, card);
+      }, 1_200);
+      timer.unref?.();
+    }
+    return { card: { type: "raw", data: card }, toast };
+  }
+
   async handleCardAction(action) {
+    this.log.info("收到卡片操作", {
+      kind: isRecord(action.value) ? str(action.value.a) : "(none)",
+      messageId: action.messageId,
+      chatId: action.chatId,
+      operator: maskId(action.operatorOpenId),
+      formValueKeys: isRecord(action.formValue) ? Object.keys(action.formValue) : undefined,
+    });
     if (!this.isAllowed(action.operatorOpenId)) {
       return { toast: { type: "error", content: "你不在允许名单内" } };
     }
@@ -810,15 +876,20 @@ export class FeishuApp {
 
     if (kind === "list") {
       const views = await this.bridge.views();
-      await this.sender.patchCard(
-        action.messageId,
-        sessionListCard({
-          sessions: views,
-          page: Number(value.p) || 0,
-          pageSize: this.config.sessionPageSize,
-        }),
-      );
-      return { toast: { type: "info", content: "已刷新" } };
+      const card = sessionListCard({
+        sessions: views,
+        page: Number(value.p) || 0,
+        pageSize: this.config.sessionPageSize,
+      });
+      this.log.info("会话列表卡片刷新", {
+        count: views.length,
+        page: Number(value.p) || 0,
+        messageId: action.messageId,
+      });
+      // Return the card in the callback response. A separate im.message.patch
+      // issued before the callback settles is undone by Feishu when the
+      // response arrives; the response card is authoritative.
+      return this.respondCard(action, card, { type: "info", content: "已刷新" });
     }
 
     if (kind === "open") {
@@ -842,6 +913,7 @@ export class FeishuApp {
         const sessionId = await this.bridge.createSession({
           cwd: this.config.defaultDirectory,
           preset: this.config.defaultPermissionPreset,
+          model: this.defaultModelSelection(),
         });
         const opened = await this.openSessionThread(
           sessionId,
@@ -856,11 +928,11 @@ export class FeishuApp {
           opened.sent.messageId,
           action.chatId,
         );
-        await this.sender.patchCard(
-          action.messageId,
-          createdHintCard("🚀 已创建并开始处理", [`会话：\`${shortId(sessionId)}\``, "已在新话题中开始处理这条消息。"]),
-        );
-        return { toast: { type: "success", content: "已创建会话" } };
+        const card = createdHintCard("🚀 已创建并开始处理", [
+          `会话：\`${shortId(sessionId)}\``,
+          "已在新话题中开始处理这条消息。",
+        ]);
+        return this.respondCard(action, card, { type: "success", content: "已创建会话" });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };
       }
@@ -872,11 +944,8 @@ export class FeishuApp {
       const sid = str(value.s);
       const view = await this.bridge.viewOf(sid);
       const catalog = await this.bridge.modelCatalog();
-      await this.sender.patchCard(
-        action.messageId,
-        modelCard({ sid, current: view.model, models: catalog.models, page: Number(value.p) || 0 }),
-      );
-      return { toast: { type: "info", content: "已翻页" } };
+      const card = modelCard({ sid, current: view.model, models: catalog.models, page: Number(value.p) || 0 });
+      return this.respondCard(action, card, { type: "info", content: "已翻页" });
     }
 
     if (kind === "model") {
@@ -886,15 +955,12 @@ export class FeishuApp {
       if (!sid || !provider || !model) return { toast: { type: "error", content: "参数不完整" } };
       try {
         await this.bridge.controller().selectModel({ sessionId: sid, provider, model });
-        await this.sender.patchCard(
-          action.messageId,
-          compactResultCard({
-            title: "🧠 模型已切换",
-            template: "green",
-            lines: [`后续回复使用 **${provider}/${model}**。`],
-          }),
-        );
-        return { toast: { type: "success", content: "已切换模型" } };
+        const card = compactResultCard({
+          title: "🧠 模型已切换",
+          template: "green",
+          lines: [`后续回复使用 **${provider}/${model}**。`],
+        });
+        return this.respondCard(action, card, { type: "success", content: "已切换模型" });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };
       }
@@ -906,15 +972,12 @@ export class FeishuApp {
       if (!sid || !preset) return { toast: { type: "error", content: "参数不完整" } };
       try {
         await this.bridge.setPermission(sid, preset);
-        await this.sender.patchCard(
-          action.messageId,
-          compactResultCard({
-            title: "🔐 权限已切换",
-            template: "green",
-            lines: [`当前预设：**${preset}**`],
-          }),
-        );
-        return { toast: { type: "success", content: "已切换权限" } };
+        const card = compactResultCard({
+          title: "🔐 权限已切换",
+          template: "green",
+          lines: [`当前预设：**${preset}**`],
+        });
+        return this.respondCard(action, card, { type: "success", content: "已切换权限" });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };
       }

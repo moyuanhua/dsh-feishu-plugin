@@ -224,13 +224,16 @@ export class DshBridge {
   }
 
   async prompt(sessionId, content, mode, requestId) {
+    // The Remote wrapper normally supplies this signal; direct Host calls must
+    // pass one because prompt admission calls signal.throwIfAborted().
+    const signal = new AbortController().signal;
     return await this.controller().prompt({
       requestId,
       sessionId,
       mode,
       content,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    });
+    }, signal);
   }
 
   async cancel(sessionId) {

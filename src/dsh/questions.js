@@ -81,7 +81,7 @@ export class FeishuQuestions {
     return { answers: answer };
   }
 
-  async settle(key, answers, note) {
+  async settle(key, answers, note, patch = true) {
     const item = this.pending.get(key);
     if (!item || item.settled) return false;
     item.settled = true;
@@ -98,9 +98,9 @@ export class FeishuQuestions {
           })
           .join("\n")
       : "已跳过/超时。";
-    await this.sender.patchCard(item.messageId, questionAnsweredCard({ summary }));
+    if (patch) await this.sender.patchCard(item.messageId, questionAnsweredCard({ summary }));
     if (note) this.log.info("提问结束", { sessionId: item.sessionId, note });
-    return true;
+    return summary;
   }
 
   /** Resolve a question with one selected option label. */
@@ -128,8 +128,16 @@ export class FeishuQuestions {
       return { toast: { type: "info", content: "已记录，请继续回答其他问题" } };
     }
     for (const [id, answer] of item.answers) if (id !== questionId) answers.push(answer);
-    await this.settle(payload.key, answers);
-    return { toast: { type: "info", content: "已回答" } };
+    const summary = answers
+      .map((entry) => {
+        const question = item.questions.find((q) => q.id === entry.id);
+        const text = entry.selected?.length ? entry.selected.join(", ") : entry.custom ?? "(跳过)";
+        return `- ${question?.question ?? entry.id}: **${truncate(text, 300)}**`;
+      })
+      .join("\n");
+    await this.settle(payload.key, answers, undefined, false);
+    const card = questionAnsweredCard({ summary });
+    return { card: { type: "raw", data: card }, toast: { type: "info", content: "已回答" } };
   }
 
   /**
