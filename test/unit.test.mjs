@@ -148,6 +148,27 @@ test("sessionBrief extracts title, summary, last user and assistant text", async
   assert.equal(brief.lastAssistant, "latest answer");
 });
 
+test("runCard collapses three or more tool calls", () => {
+  const tools = Array.from({ length: 5 }, (_, index) => ({
+    callId: `c${index}`,
+    name: "bash",
+    preview: `echo ${index}`,
+    status: "done",
+  }));
+  const live = runCard({
+    run: { sessionId: "s", status: "running", startedAt: Date.now(), tools, toolTotal: 5, streamingText: "" },
+    maxAnswerChars: 4_000,
+  });
+  const json = JSON.stringify(live);
+  assert.match(json, /collapsible_panel/);
+  assert.match(json, /4 个工具调用/);
+  const done = runCard({
+    run: { sessionId: "s", status: "done", startedAt: Date.now(), tools, toolTotal: 5, text: "ok" },
+    maxAnswerChars: 4_000,
+  });
+  assert.match(JSON.stringify(done), /已结束/);
+});
+
 test("every card builder produces serializable JSON 2.0", () => {
   const cards = [
     helpCard(),

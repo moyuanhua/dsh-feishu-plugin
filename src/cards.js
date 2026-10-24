@@ -244,8 +244,11 @@ export function openedSessionCard({ view, style = "resumed", brief }) {
   if (style === "created") {
     lines.push("会话已创建。直接在这个话题里发消息即可开始。");
   } else if (style === "entered") {
-    lines.push("已为这个会话打开新的飞书话题，请到话题里继续。");
-    lines.push("会话列表卡片已收起，避免从同一份列表里进入多个会话。");
+    return card({
+      title: "✅ 已进入话题",
+      template: "green",
+      elements: [md(`**${truncate(view.title || "(未命名)", 100)}**`)],
+    });
   } else {
     lines.push("已在这个话题里接入选中的 DSH 会话。直接发消息即可继续。");
   }
@@ -381,6 +384,67 @@ export function questionAnsweredCard({ summary }) {
   });
 }
 
+function panelHeader(titleMd) {
+  return {
+    title: { tag: "markdown", content: titleMd },
+    vertical_align: "center",
+    icon: { tag: "standard_icon", token: "down-small-ccm_outlined", size: "16px 16px" },
+    icon_position: "follow_text",
+    icon_expanded_angle: -180,
+  };
+}
+
+function collapsiblePanel({ title, expanded, border = "grey", body }) {
+  return {
+    tag: "collapsible_panel",
+    expanded,
+    header: panelHeader(title),
+    border: { color: border, corner_radius: "5px" },
+    vertical_spacing: "8px",
+    padding: "8px 8px 8px 8px",
+    elements: [{ tag: "markdown", content: body, text_size: "notation" }],
+  };
+}
+
+function toolHeader(tool) {
+  const icon = tool.status === "error" ? "❌" : tool.status === "done" ? "✅" : "🔧";
+  const preview = truncate(tool.preview ?? "", 80);
+  return preview ? `${icon} **${truncate(tool.name, 40)}** — ${preview}` : `${icon} **${truncate(tool.name, 40)}**`;
+}
+
+function toolPanel(tool, expanded) {
+  const body = tool.preview ? `**输入**\n${truncate(tool.preview, 400)}` : "_无参数_";
+  return collapsiblePanel({
+    title: toolHeader(tool),
+    expanded,
+    border: tool.status === "error" ? "red" : "grey",
+    body: tool.status === "running" ? `${body}\n\n_运行中…_` : body,
+  });
+}
+
+function collapsedTools(tools, finalized) {
+  return collapsiblePanel({
+    title: `🔧 **${tools.length} 个工具调用${finalized ? "（已结束）" : ""}**`,
+    expanded: false,
+    border: "blue",
+    body: tools.map((tool) => `- ${toolHeader(tool)}`).join("\n"),
+  });
+}
+
+function toolElements(run) {
+  const tools = run.tools ?? [];
+  if (tools.length === 0) return [];
+  const running = run.status === "starting" || run.status === "running";
+  if (tools.length < 3) return tools.map((tool) => toolPanel(tool, false));
+  if (!running) return [collapsedTools(tools, true)];
+  const prior = tools.slice(0, -1);
+  const latest = tools[tools.length - 1];
+  const elements = [];
+  if (prior.length > 0) elements.push(collapsedTools(prior, false));
+  elements.push(toolPanel(latest, true));
+  return elements;
+}
+
 export function runCard({ run, maxAnswerChars }) {
   const status = run.status;
   const title =
@@ -405,18 +469,11 @@ export function runCard({ run, maxAnswerChars }) {
   const elements = [];
   elements.push(md(meta.join(" · ") || "已收到消息"));
   if (run.tools.length) {
-    const shown = run.tools.slice(-10);
     elements.push(hr());
-    elements.push(
-      md(
-        shown
-          .map((tool) => {
-            const icon = tool.status === "error" ? "❌" : tool.status === "done" ? "✅" : "⏳";
-            return `${icon} \`${truncate(tool.name, 40)}\` ${truncate(tool.preview ?? "", 120)}`;
-          })
-          .join("\n"),
-      ),
-    );
+    elements.push(...toolElements(run));
+    if ((run.toolTotal ?? run.tools.length) > run.tools.length) {
+      elements.push(note(`…已省略前 ${run.toolTotal - run.tools.length} 次工具调用`));
+    }
   }
   const text = (run.streamingText || run.text || "").trim();
   if (text) {

@@ -56,6 +56,7 @@ export class RunCards {
       startedAt: Date.now(),
       finishedAt: 0,
       tools: [],
+      toolTotal: 0,
       text: "",
       streamingText: "",
       streamingReasoning: "",
@@ -138,13 +139,14 @@ export class RunCards {
         run.step = Number(data.step) || run.step;
         break;
       case "tool/call": {
+        run.toolTotal = (run.toolTotal ?? 0) + 1;
         run.tools.push({
           callId: String(data.callId ?? ""),
           name: String(data.name ?? "tool"),
           preview: toolPreview(String(data.name ?? ""), data.arguments),
           status: "running",
         });
-        if (run.tools.length > 30) run.tools.splice(0, run.tools.length - 30);
+        if (run.tools.length > 12) run.tools.splice(0, run.tools.length - 12);
         this.schedule(run);
         break;
       }
