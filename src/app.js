@@ -351,6 +351,22 @@ export class FeishuApp {
       await this.openByIndex(message, command.args);
       return;
     }
+    if (name === "brief") {
+      if (!sessionId) {
+        await this.replyFor(message, errorCard("没有会话", "请在话题里使用 `/brief`。"));
+        return;
+      }
+      const view = await this.bridge.viewOf(sessionId);
+      const brief = await this.bridge.sessionBrief(sessionId).catch(() => undefined);
+      const lines = [`**标题**：${truncate(view.title, 100)}`];
+      if (view.cwd) lines.push(`**目录**：\`${view.cwd}\``);
+      if (brief?.summary) lines.push("", "**历史摘要**", ...brief.summary.split("\n").map((line) => `> ${line}`));
+      if (brief?.lastUser) lines.push("", "**你的上一条**", ...brief.lastUser.split("\n").map((line) => `> ${line}`));
+      if (brief?.lastAssistant) lines.push("", "**上次回复**", ...brief.lastAssistant.split("\n").map((line) => `> ${line}`));
+      if (lines.length === 1) lines.push("", "这个会话还没有可读取的消息历史。");
+      await this.replyFor(message, compactResultCard({ title: "📄 会话简介", lines, template: "blue" }));
+      return;
+    }
     if (name === "current") {
       if (!sessionId) {
         await this.replyFor(message, mainHintCard({}));
@@ -527,7 +543,17 @@ export class FeishuApp {
 
   async openSessionThread(sessionId, anchorMessageId, chatId, openId, style) {
     const view = await this.bridge.viewOf(sessionId);
-    const sent = await this.sender.replyCard(anchorMessageId, openedSessionCard({ view, style }), { replyInThread: true });
+    const brief =
+      style === "created"
+        ? undefined
+        : await Promise.race([
+            this.bridge.sessionBrief(sessionId).catch(() => undefined),
+            new Promise((resolve) => {
+              const timer = setTimeout(() => resolve(undefined), 2_000);
+              timer.unref?.();
+            }),
+          ]);
+    const sent = await this.sender.replyCard(anchorMessageId, openedSessionCard({ view, style, brief }), { replyInThread: true });
     if (!sent.ok) throw new Error(sent.error ?? "无法创建话题");
     const meta = sent.threadId ? undefined : await this.sender.getMessageMeta(sent.messageId);
     const threadId = sent.threadId ?? meta?.threadId;
@@ -542,7 +568,7 @@ export class FeishuApp {
       title: view.title,
       style,
     });
-    return { sent, threadId, view };
+    return { sent, threadId, view, brief };
   }
 
   async openByIndex(message, args) {
@@ -879,7 +905,7 @@ export class FeishuApp {
           action.operatorOpenId,
           "resumed",
         );
-        const card = openedSessionCard({ view: opened.view, style: "entered" });
+        const card = openedSessionCard({ view: opened.view, style: "entered", brief: opened.brief });
         return this.respondCard(action, card, { type: "success", content: "已进入话题" });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };

@@ -9,6 +9,7 @@ const KNOWN = new Set([
   "open",
   "use",
   "current",
+  "brief",
   "stop",
   "help",
   "model",

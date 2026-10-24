@@ -119,6 +119,35 @@ test("DshBridge.prompt passes the AbortSignal required by prompt admission", asy
   assert.ok(captured.signal instanceof AbortSignal);
 });
 
+test("sessionBrief extracts title, summary, last user and assistant text", async () => {
+  const query = {
+    async readSurface() {
+      return {
+        events: [
+          { type: "user/message", surfaceOp: "append", data: { content: [{ type: "text", text: "first" }], source: { kind: "user" } } },
+          { type: "assistant/message", data: { message: { role: "assistant", content: [{ type: "text", text: "answer one" }] } } },
+          { type: "user/message", surfaceOp: { op: "replace", startSeq: 1, endSeq: 2 }, data: { content: [{ type: "text", text: "compacted summary" }], source: { kind: "system" } } },
+          { type: "user/message", surfaceOp: "append", data: { content: [{ type: "text", text: "latest question" }], source: { kind: "user" } } },
+          { type: "assistant/message", data: { message: { role: "assistant", content: [{ type: "text", text: "latest answer" }] } } },
+        ],
+      };
+    },
+    async readTitle() {
+      return { title: "demo title" };
+    },
+  };
+  const bridge = new DshBridge(
+    { get: (key) => (key === "sessionQuery" ? query : undefined) },
+    { allowedRoots: ["/tmp"], defaultDirectory: "/tmp" },
+    { debug() {}, info() {}, warn() {}, error() {} },
+  );
+  const brief = await bridge.sessionBrief("session-1");
+  assert.equal(brief.title, "demo title");
+  assert.equal(brief.summary, "compacted summary");
+  assert.equal(brief.lastUser, "latest question");
+  assert.equal(brief.lastAssistant, "latest answer");
+});
+
 test("every card builder produces serializable JSON 2.0", () => {
   const cards = [
     helpCard(),

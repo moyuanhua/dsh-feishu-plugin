@@ -6,6 +6,18 @@ function signal() {
   return new AbortController().signal;
 }
 
+function briefMessageText(payload) {
+  const message = payload?.message ?? payload;
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  const parts = [];
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    if (block.type === "text" && typeof block.text === "string" && block.text.trim()) parts.push(block.text.trim());
+    else if (block.type === "image") parts.push("[图片]");
+  }
+  return parts.join("\n").trim();
+}
+
 export class DshBridge {
   constructor(ctx, config, log) {
     this.ctx = ctx;
@@ -124,6 +136,46 @@ export class DshBridge {
     const live = this.sessionStore()?.get?.(sessionId);
     if (live) return this.view({ sessionId, updatedAt: Date.now(), cwd: live.header?.cwd });
     return { sessionId, title: "(未知会话)", updatedAt: 0, running: false };
+  }
+
+  /**
+   * Read a cold/live session's model-visible surface and derive a short brief:
+   * title, latest compaction summary, last user message, last assistant reply.
+   * Uses sessionQuery.readSurface so cold sessions are not resumed.
+   */
+  async sessionBrief(sessionId) {
+    const query = this.ctx.get?.("sessionQuery") ?? this.ctx.sessionQuery;
+    if (!query?.readSurface) return undefined;
+    try {
+      const surface = await query.readSurface(sessionId);
+      const events = Array.isArray(surface?.events) ? surface.events : [];
+      let lastUser;
+      let lastAssistant;
+      let summary;
+      for (const event of events) {
+        const text = briefMessageText(event?.data);
+        if (!text) continue;
+        if (event.type === "assistant/message") lastAssistant = text;
+        else if (event.type === "user/message") {
+          const source = str(event?.data?.source?.kind ?? event?.data?.message?.source?.kind);
+          if (!source || source === "user") lastUser = text;
+          if (event?.surfaceOp && typeof event.surfaceOp === "object" && event.surfaceOp.op === "replace") {
+            summary = text;
+          }
+        }
+      }
+      const title = await query.readTitle?.(sessionId).catch(() => undefined);
+      return {
+        title: title?.title ? str(title.title) : undefined,
+        summary: summary ? truncate(summary, 1_200) : undefined,
+        lastUser: lastUser ? truncate(lastUser, 600) : undefined,
+        lastAssistant: lastAssistant ? truncate(lastAssistant, 800) : undefined,
+        surfaceEvents: events.length,
+      };
+    } catch (error) {
+      this.log.debug("读取会话简介失败", { sessionId, error: describeError(error) });
+      return undefined;
+    }
   }
 
   async modelCatalog() {

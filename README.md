@@ -87,7 +87,7 @@ dsh plugin --profile <profile> add /path/to/dsh-feishu-plugin
 |---|---|
 | `/new [标题]` | 打开建会话表单（目录 / 模型 / 权限预设） |
 | `/sessions`（`/ls`） | 会话列表，可翻页、进入话题 |
-| `/open <序号>` / `/resume [序号]` | 为选中的会话新开一个飞书话题；列表卡会变成该会话卡，避免从同一列表重复进入 |
+| `/open <序号>` / `/resume [序号]` | 为选中的会话新开一个飞书话题，并附上会话简介（历史摘要 / 上一条 / 上次回复）；列表卡会变成该会话卡 |
 | `/help` | 命令帮助 |
 
 主聊天流只识别 `/` 开头的命令；普通文本一律回管理台卡片，不再做意图识别或自动建会话。
@@ -100,6 +100,7 @@ dsh plugin --profile <profile> add /path/to/dsh-feishu-plugin
 |---|---|
 | `/stop` | 取消当前回合 |
 | `/current` | 查看当前会话（标题 / 目录 / 模型 / 权限 / 状态） |
+| `/brief` | 读取会话简介：历史摘要（如有）、上一条消息、上次回复（读取 Session surface，不恢复 Agent） |
 | `/model [关键词]` | 切换到模型；无参数发选择卡片 |
 | `/perm [预设名]` | 切换 DSH 权限预设（沙箱 + 审批策略） |
 | `/cd <绝对路径>` | 迁移会话工作目录 |
@@ -143,6 +144,17 @@ DSH 的审批请求会变成飞书卡片：**允许一次 / 拒绝**。DSH 本�
 | `debugLog` | `false` | **调试日志开关**（插件页可切换）；开 = 强制 `debug` 级别 |
 | `logLevel` | `info` | 基础日志级别；`debugLog` 关闭时生效 |
 | `logFile` | `~/.dsh/feishu-plugin/feishu.log` | 日志文件；`false` 关闭 |
+
+## 会话简介 / 历史摘要
+
+DSH 没有单独的“会话总结 API”，但持久化日志里有模型可见的完整 surface：
+
+- 话题标题来自 `session/title`；
+- 如果这个会话做过 compaction，surface 里会有一条 replace 的摘要消息；
+- 上一条用户消息、上次助手回复都在 surface 里。
+
+本插件用 `sessionQuery.readSurface(sessionId)` 读取（冷会话不会恢复 Agent），在进入老会话时把
+**历史摘要 / 你的上一条 / 上次回复**附到话题根卡；也可以随时在话题里发 `/brief` 重新读取。
 
 ## 与 OpenCode 插件的差异
 

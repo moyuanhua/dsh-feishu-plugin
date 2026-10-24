@@ -239,7 +239,7 @@ export function newSessionFormCard({ values = {}, error, models = [], perms = []
   return card({ title: "📝 新建 DSH 会话", template: "blue", elements });
 }
 
-export function openedSessionCard({ view, style = "resumed" }) {
+export function openedSessionCard({ view, style = "resumed", brief }) {
   const lines = [];
   if (style === "created") {
     lines.push("会话已创建。直接在这个话题里发消息即可开始。");
@@ -255,6 +255,13 @@ export function openedSessionCard({ view, style = "resumed" }) {
   lines.push(`**模型**：${view.model ? `${view.model.provider}/${view.model.model}` : "(DSH 默认)"}`);
   if (view.perm) lines.push(`**权限**：${view.perm}`);
   if (view.updatedAt) lines.push(`**最近活动**：${relativeTime(view.updatedAt)}`);
+  if (brief && style !== "created") {
+    const excerpts = [];
+    if (brief.summary) excerpts.push(`**历史摘要**\n> ${truncate(brief.summary.replace(/\n/g, "\n> "), 900)}`);
+    if (brief.lastUser) excerpts.push(`**你的上一条**\n> ${truncate(brief.lastUser.replace(/\n/g, "\n> "), 400)}`);
+    if (brief.lastAssistant) excerpts.push(`**上次回复**\n> ${truncate(brief.lastAssistant.replace(/\n/g, "\n> "), 600)}`);
+    if (excerpts.length) lines.push("", "—", ...excerpts);
+  }
   return card({
     title: style === "created" ? "✅ 会话已创建" : style === "entered" ? "✅ 已进入话题" : "🔄 会话已接入",
     template: "green",
