@@ -18,6 +18,7 @@
 | 卡片按钮刷新 | 卡片更新改为在 `card.action.trigger` 回调响应里返回 `card`（并行延迟 patch 兜底），避免 Feishu 在回调结束后用原卡片覆盖 |
 | 调试开关 | `debugLog` volatile 字段：插件页勾选即强制 debug 级别，日志仍写 `feishu.log` |
 | 工具折叠 | 运行卡永远只展开最新一个工具，历史工具折叠为摘要；最多保留 12 个 |
+| 长连接观测 | 60s 心跳日志（state/inboundCount/lastInboundAgoMs/reconnectAttempts），状态变化单独记录；debugLog 打开后含 SDK ping/pong trace |
 | 长连接自愈 | `pingTimeout=30` + 60s 状态 watchdog；半开连接自动断开重连，状态写日志 |
 | 会话标识 | 进入老会话的主卡片与话题根卡都显示完整 `session-...` ID，便于在 DSH Web 里定位 |
 | 会话简介 | `sessionQuery.readSurface` 读取冷会话 surface；进入老会话时附历史摘要/上一条/上次回复，`/brief` 可重复读取 |

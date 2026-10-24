@@ -29,14 +29,22 @@ export function createFeishuClient({ appId, appSecret, domain }) {
   });
 }
 
-export function startGateway({ appId, appSecret, domain, log, onMessage, onCardAction }) {
+export function startGateway({ appId, appSecret, domain, log, onMessage, onCardAction, debug = false }) {
   const logger = bridgeLogger(log, "lark");
 
+  let lastInboundAt = 0;
+  let inboundCount = 0;
+  const markInbound = () => {
+    lastInboundAt = Date.now();
+    inboundCount += 1;
+  };
+
   const dispatcher = new Lark.EventDispatcher({
-    loggerLevel: Lark.LoggerLevel.info,
+    loggerLevel: debug ? Lark.LoggerLevel.debug : Lark.LoggerLevel.info,
     logger,
   }).register({
     "im.message.receive_v1": (data) => {
+      markInbound();
       try {
         const message = parseIncomingMessage(data);
         if (!message) return;
@@ -48,6 +56,7 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
       }
     },
     "card.action.trigger": async (data) => {
+      markInbound();
       try {
         const action = parseCardAction(data);
         if (!action) return {};
@@ -70,7 +79,7 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
       appId,
       appSecret,
       domain: domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
-      loggerLevel: Lark.LoggerLevel.info,
+      loggerLevel: debug ? Lark.LoggerLevel.debug : Lark.LoggerLevel.info,
       logger,
       // The SDK pings every ~120s. Without pingTimeout it never notices a
       // half-open socket (NAT idle timeout, Wi-Fi switch, laptop sleep): the
@@ -104,6 +113,7 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
 
   connect();
 
+  let lastState;
   watchdog = setInterval(() => {
     if (stopped) return;
     let status;
@@ -114,11 +124,19 @@ export function startGateway({ appId, appSecret, domain, log, onMessage, onCardA
       return;
     }
     const state = status?.state;
+    if (state !== lastState) {
+      log.info("飞书长连接状态变化", { from: lastState ?? "(none)", to: state, status });
+      lastState = state;
+    }
+    log.info("飞书长连接心跳", {
+      state,
+      inboundCount,
+      lastInboundAgoMs: lastInboundAt ? Date.now() - lastInboundAt : null,
+      reconnectAttempts: status?.reconnectAttempts,
+    });
     if (state === "failed" || state === "closed") {
       restart(`state:${state}`);
-      return;
     }
-    log.info("飞书长连接状态", { status });
   }, 60_000);
   watchdog.unref?.();
 

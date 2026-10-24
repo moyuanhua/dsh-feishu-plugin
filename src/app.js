@@ -127,6 +127,7 @@ export class FeishuApp {
       appSecret: this.config.appSecret,
       domain: this.config.domain,
       log: this.log,
+      debug: this.config.logLevel === "debug",
       onMessage: (message) => this.handleMessage(message),
       onCardAction: (action) => this.handleCardAction(action),
     });

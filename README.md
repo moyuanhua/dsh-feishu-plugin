@@ -209,17 +209,20 @@ ESTABLISHED，但飞书事件已经推不过来，也不会触发 close/reconnec
 
 - 给 `WSClient` 配 `wsConfig.pingTimeout = 30`：ping 后 30 秒没有收到任何入站帧就主动断开并重连；
 - 每 60 秒检查 `getConnectionStatus()`，状态 `failed` / `closed` 时重建长连接；
-- 每分钟把连接状态写入 `feishu.log`，便于排查。
+- 每 60 秒写一行心跳：`state` / `inboundCount` / `lastInboundAgoMs` / `reconnectAttempts`；
+- 状态变化单独写 `飞书长连接状态变化`；
+- `debugLog` 打开时，SDK 的 ping/pong trace 也会进 `feishu.log`。
 
 如果仍出现不回复，先看：
 
 ```sh
-grep -E '长连接状态|长连接重启|长连接错误' ~/.dsh/feishu-plugin/feishu.log | tail -20
+grep -E '长连接心跳|长连接状态变化|长连接重启|长连接错误' ~/.dsh/feishu-plugin/feishu.log | tail -30
 ```
 
 ## 故障排查
 
 | 现象 | 处理 |
+| `飞书长连接心跳` 里 `state=connected` 但 `lastInboundAgoMs` 持续增大 | 典型半开连接；重启插件或等 watchdog 触发重连 |
 |---|---|
 | 发消息没反应 | 应用是否已发布；事件/回调是否都选长连接；`im:message.p2p_msg:readonly` 是否开通 |
 | 日志看哪里 | `~/.dsh/feishu-plugin/feishu.log` |
