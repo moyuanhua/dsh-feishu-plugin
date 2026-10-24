@@ -243,6 +243,9 @@ export function openedSessionCard({ view, style = "resumed" }) {
   const lines = [];
   if (style === "created") {
     lines.push("会话已创建。直接在这个话题里发消息即可开始。");
+  } else if (style === "entered") {
+    lines.push("已为这个会话打开新的飞书话题，请到话题里继续。");
+    lines.push("会话列表卡片已收起，避免从同一份列表里进入多个会话。");
   } else {
     lines.push("已在这个话题里接入选中的 DSH 会话。直接发消息即可继续。");
   }
@@ -252,7 +255,11 @@ export function openedSessionCard({ view, style = "resumed" }) {
   lines.push(`**模型**：${view.model ? `${view.model.provider}/${view.model.model}` : "(DSH 默认)"}`);
   if (view.perm) lines.push(`**权限**：${view.perm}`);
   if (view.updatedAt) lines.push(`**最近活动**：${relativeTime(view.updatedAt)}`);
-  return card({ title: style === "created" ? "✅ 会话已创建" : "🔄 会话已接入", template: "green", elements: [md(lines.join("\n"))] });
+  return card({
+    title: style === "created" ? "✅ 会话已创建" : style === "entered" ? "✅ 已进入话题" : "🔄 会话已接入",
+    template: "green",
+    elements: [md(lines.join("\n"))],
+  });
 }
 
 export function modelCard({ sid, current, models, page = 0, pageSize = 8 }) {

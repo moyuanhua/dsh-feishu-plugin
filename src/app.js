@@ -35,7 +35,6 @@ import {
   shortId,
   str,
   truncate,
-  uniqueId,
   validateDirectory,
 } from "./utils.js";
 
@@ -78,7 +77,6 @@ export class FeishuApp {
     this.state = new StateStore({ file: config.stateFile, log });
     this.signer = createSigner(config.signSecret);
     this.dedup = new Dedup();
-    this.pendingQuick = new Map();
     this.disposers = [];
     this.gateway = undefined;
     this.startedAt = Date.now();
@@ -147,7 +145,6 @@ export class FeishuApp {
       }
     }
     this.disposers = [];
-    this.pendingQuick.clear();
   }
 
   /**
@@ -285,29 +282,9 @@ export class FeishuApp {
   }
 
   async handleMainText(message) {
-    const text = message.text.trim() || (message.attachments.length ? "[附件]" : "");
-    if (!text) return;
-    const key = uniqueId("quick_");
-    const token = this.signer.sign({ kind: "quick", key });
-    this.pendingQuick.set(key, {
-      text,
-      chatId: message.chatId,
-      openId: message.senderOpenId,
-      messageId: message.messageId,
-      createdAt: Date.now(),
-    });
-    this.pruneQuick();
-    await this.sender.sendCard(message.chatId, mainHintCard({ pendingKey: token, pendingText: text }));
-  }
-
-  pruneQuick() {
-    const now = Date.now();
-    for (const [key, item] of this.pendingQuick) {
-      if (now - item.createdAt > 30 * 60_000) this.pendingQuick.delete(key);
-    }
-    while (this.pendingQuick.size > 40) {
-      this.pendingQuick.delete(this.pendingQuick.keys().next().value);
-    }
+    // The main chat is a management console only: recognized slash commands
+    // run, everything else gets the console card. No intent guessing.
+    await this.sender.sendCard(message.chatId, mainHintCard({}));
   }
 
   async createSessionInThread(message, threadId, rootId) {
@@ -347,8 +324,7 @@ export class FeishuApp {
       return;
     }
     if (name === "cancel") {
-      this.pendingQuick.clear();
-      await this.replyFor(message, compactResultCard({ title: "已取消", lines: ["未提交的临时状态已清空。"], template: "grey" }));
+        await this.replyFor(message, compactResultCard({ title: "已取消", lines: ["未提交的临时状态已清空。"], template: "grey" }));
       return;
     }
     if (name === "sessions" || name === "ls") {
@@ -896,43 +872,15 @@ export class FeishuApp {
       const sessionId = str(value.s);
       if (!sessionId) return { toast: { type: "error", content: "缺少会话" } };
       try {
-        await this.openSessionThread(sessionId, action.messageId, action.chatId, action.operatorOpenId, "resumed");
-        return { toast: { type: "success", content: "已开话题" } };
-      } catch (error) {
-        return { toast: { type: "error", content: truncate(describeError(error), 80) } };
-      }
-    }
-
-    if (kind === "quicknew") {
-      const payload = this.signer.verify(value.k);
-      if (!payload || payload.kind !== "quick") return { toast: { type: "error", content: "凭证无效或已过期" } };
-      const item = this.pendingQuick.get(payload.key);
-      if (!item) return { toast: { type: "error", content: "这条消息已过期，请重新发送" } };
-      this.pendingQuick.delete(payload.key);
-      try {
-        const sessionId = await this.bridge.createSession({
-          cwd: this.config.defaultDirectory,
-          preset: this.config.defaultPermissionPreset,
-          model: this.defaultModelSelection(),
-        });
         const opened = await this.openSessionThread(
           sessionId,
           action.messageId,
           action.chatId,
           action.operatorOpenId,
-          "created",
+          "resumed",
         );
-        await this.promptSession(
-          sessionId,
-          { text: item.text, attachments: [], messageId: `quick-${payload.key}` },
-          opened.sent.messageId,
-          action.chatId,
-        );
-        const card = createdHintCard("🚀 已创建并开始处理", [
-          `会话：\`${shortId(sessionId)}\``,
-          "已在新话题中开始处理这条消息。",
-        ]);
-        return this.respondCard(action, card, { type: "success", content: "已创建会话" });
+        const card = openedSessionCard({ view: opened.view, style: "entered" });
+        return this.respondCard(action, card, { type: "success", content: "已进入话题" });
       } catch (error) {
         return { toast: { type: "error", content: truncate(describeError(error), 80) } };
       }
