@@ -189,7 +189,7 @@ test("every card builder produces serializable JSON 2.0", () => {
       dirs: [{ name: "x", path: "/tmp/x", isRepo: false }],
       roots: ["/tmp"],
     }),
-    openedSessionCard({ view: { title: "demo", cwd: "/tmp", model: { provider: "p", model: "m" }, perm: "workspace-write" }, style: "entered" }),
+    openedSessionCard({ view: { sessionId: "session-demo", title: "demo", cwd: "/tmp", model: { provider: "p", model: "m" }, perm: "workspace-write" }, style: "entered" }),
     modelCard({ sid: "s1", current: { provider: "p", model: "m" }, models: [{ provider: "p", providerName: "P", model: "m", name: "M" }] }),
     permissionCard({ sid: "s1", current: "workspace-write", perms: [{ value: "workspace-write", name: "Workspace write" }] }),
     approvalCard({ toolName: "bash", reason: "needs write", approveToken: "a", rejectToken: "r" }),

@@ -244,16 +244,19 @@ export function openedSessionCard({ view, style = "resumed", brief }) {
   if (style === "created") {
     lines.push("会话已创建。直接在这个话题里发消息即可开始。");
   } else if (style === "entered") {
+    const entered = [`**${truncate(view.title || "(未命名)", 100)}**`];
+    if (view.sessionId) entered.push("", `**会话 ID**：\`${view.sessionId}\``);
     return card({
       title: "✅ 已进入话题",
       template: "green",
-      elements: [md(`**${truncate(view.title || "(未命名)", 100)}**`)],
+      elements: [md(entered.join("\n"))],
     });
   } else {
     lines.push("已在这个话题里接入选中的 DSH 会话。直接发消息即可继续。");
   }
   lines.push("");
   lines.push(`**标题**：${truncate(view.title || "(未命名)", 80)}`);
+  if (view.sessionId) lines.push(`**会话 ID**：\`${view.sessionId}\``);
   if (view.cwd) lines.push(`**目录**：\`${truncateMiddle(view.cwd, 80)}\``);
   lines.push(`**模型**：${view.model ? `${view.model.provider}/${view.model.model}` : "(DSH 默认)"}`);
   if (view.perm) lines.push(`**权限**：${view.perm}`);
