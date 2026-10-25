@@ -94,7 +94,7 @@ export class FeishuApprovals {
     return outcome;
   }
 
-  async settle(key, outcome, note, patch = true) {
+  async settle(key, outcome, note) {
     const item = this.pending.get(key);
     if (!item || item.settled) return false;
     item.settled = true;
@@ -102,7 +102,11 @@ export class FeishuApprovals {
     clearTimeout(item.timer);
     if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
     item.resolve?.(outcome);
-    if (patch) {
+    // The approval card has served its purpose. Recall it after either
+    // decision (and on timeout/abort) instead of leaving a stale card in the
+    // topic. If recall is unavailable, fall back to showing the result.
+    const recalled = await this.sender.recallMessage(item.messageId);
+    if (!recalled.ok) {
       const approved = outcome === "allowed-once";
       await this.sender.patchCard(item.messageId, approvalResultCard({ approved, toolName: item.toolName }));
     }
@@ -121,9 +125,7 @@ export class FeishuApprovals {
     const item = this.pending.get(payload.key);
     if (!item) return { toast: { type: "error", content: "审批已结束或已过期" } };
     const approve = value.a === "approve";
-    const toolName = item.toolName;
-    await this.settle(payload.key, approve ? "allowed-once" : "rejected", undefined, false);
-    const card = approvalResultCard({ approved: approve, toolName });
-    return { card: { type: "raw", data: card }, toast: { type: "info", content: approve ? "已允许本次调用" : "已拒绝本次调用" } };
+    await this.settle(payload.key, approve ? "allowed-once" : "rejected");
+    return { toast: { type: "info", content: approve ? "已允许本次调用" : "已拒绝本次调用" } };
   }
 }

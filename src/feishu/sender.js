@@ -64,6 +64,17 @@ export function createSender(client, log) {
       }
     },
 
+    async recallMessage(messageId) {
+      if (!messageId) return { ok: false, error: "missing messageId" };
+      try {
+        const res = await client.im.message.delete({ path: { message_id: messageId } });
+        if (!ok(res)) return { ok: false, error: `code=${res.code} msg=${res.msg ?? ""}` };
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: describeLarkError(error) };
+      }
+    },
+
     async patchCard(messageId, card) {
       if (!messageId) return { ok: false, error: "missing messageId" };
       try {
