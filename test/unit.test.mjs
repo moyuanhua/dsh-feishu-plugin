@@ -138,9 +138,10 @@ test("completeText streams a one-shot LLM answer without creating a session", as
     { defaultModel: { provider: "p", model: "m" } },
     { debug() {}, info() {}, warn() {}, error() {} },
   );
-  const text = await bridge.completeText({ system: "sys", prompt: "hello" });
+  const text = await bridge.completeText({ system: "sys", prompt: "hello", sessionId: "session-route" });
   assert.equal(text, '{"intent":"list"}');
   assert.equal(calls[0].system, "sys");
+  assert.equal(calls[0].sessionId, "session-route");
   assert.equal(calls[0].messages[0].content[0].text, "hello");
 });
 
@@ -224,7 +225,7 @@ test("runCard keeps a fixed skeleton with a collapsed thinking panel", () => {
   });
   const json = JSON.stringify(card);
   assert.match(json, /思考过程/);
-  assert.match(json, /正在思考/);
+  assert.match(json, /正在(思考|调用)/);
   assert.match(json, /collapsible_panel/);
   assert.match(json, /强制停止/);
 });

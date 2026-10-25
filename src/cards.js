@@ -441,7 +441,8 @@ export function runCard({ run, maxAnswerChars }) {
             : "🤖 处理中";
   const template = status === "done" ? "green" : status === "error" ? "red" : status === "stopped" ? "grey" : "blue";
 
-  const answer = (run.streamingText || run.text || "").trim();
+  const finished = status === "done" || status === "error" || status === "stopped";
+  const answer = ((finished ? run.text || run.streamingText : run.streamingText || run.text) || "").trim();
   const reasoning = (run.streamingReasoning || "").trim();
   const elapsed = run.startedAt ? Date.now() - run.startedAt : 0;
 
@@ -454,6 +455,7 @@ export function runCard({ run, maxAnswerChars }) {
 
   // Fixed skeleton: status / thinking / tools / answer / stop. Sections never
   // swap places, so streaming does not collapse the card height.
+  const runningTool = [...(run.tools ?? [])].reverse().find((tool) => tool.status === "running");
   const statusLine =
     status === "done"
       ? "✅ 完成"
@@ -463,13 +465,16 @@ export function runCard({ run, maxAnswerChars }) {
           ? "⏹ 已停止"
           : answer
             ? "✍️ 正在生成回答…"
-            : "💭 正在思考…";
+            : runningTool
+              ? `🔧 正在调用 ${truncate(runningTool.name, 30)}…`
+              : "💭 正在思考…";
 
   const elements = [];
   elements.push(md(`${meta.join(" · ")}\n${statusLine}`));
 
   const active = status === "starting" || status === "running";
-  const totalTools = run.toolTotal ?? run.tools.length;
+  const tools = run.tools ?? [];
+  const totalTools = run.toolTotal ?? tools.length;
   const thinkingTitle = active
     ? "💭 思考过程（思考中…）"
     : reasoning
@@ -487,10 +492,10 @@ export function runCard({ run, maxAnswerChars }) {
   const toolTitle = totalTools
     ? `🔧 ${totalTools} 次工具调用${active ? "（进行中）" : ""}`
     : "🔧 工具调用（暂无）";
-  const toolBody = run.tools.length
+  const toolBody = tools.length
     ? [
-        ...run.tools.map((tool) => toolLine(tool)),
-        ...(totalTools > run.tools.length ? [`- …已省略前 ${totalTools - run.tools.length} 次`] : []),
+        ...tools.map((tool) => toolLine(tool)),
+        ...(totalTools > tools.length ? [`- …已省略前 ${totalTools - tools.length} 次`] : []),
       ].join("\n")
     : "_暂无工具调用_";
   elements.push(

@@ -194,7 +194,7 @@ export class DshBridge {
   }
 
   /** One-shot text completion through DSH's LLM service (no session is created). */
-  async completeText({ system, prompt, route, maxTokens = 2_000, timeoutMs = 8_000 }) {
+  async completeText({ system, prompt, route, sessionId, maxTokens = 2_000, timeoutMs = 8_000 }) {
     const llm = this.ctx.get?.("llm") ?? this.ctx.llm;
     if (!llm?.prepareCall) throw new Error("DSH llm 服务不可用");
     const selected = route ?? (await this.defaultModelRoute());
@@ -230,6 +230,7 @@ export class DshBridge {
       // equality check fail with INVALID_PREPARED_CALL.
       const stream = call.stream({
         ...call.config,
+        ...(sessionId ? { sessionId: String(sessionId) } : {}),
         system,
         messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
         signal: controller.signal,
@@ -244,6 +245,7 @@ export class DshBridge {
       this.log.debug("一次性模型调用结束", {
         provider: selected.provider,
         model: selected.model,
+        sessionId: sessionId ? String(sessionId) : undefined,
         reasoningEffort,
         textLen: text.length,
         reasoningLen: reasoning.length,

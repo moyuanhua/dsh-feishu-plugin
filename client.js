@@ -2,10 +2,11 @@
  * Client half of dsh-feishu-plugin.
  *
  * It contributes the plugin's configuration page to the Web UI's Plugins page.
- * The page edits the two volatile fields declared by the Host Config schema:
- * appId and appSecret. Writes go through the plugin manager's ConfigPageForm,
- * which persists them through the profile's config editor and applies them
- * live; the Host half restarts the Feishu long connection on change.
+ * The page edits the Host Config fields: App ID / Secret, the new-session
+ * defaults (directory, model, permission) and the debug-log switch. Writes go
+ * through the plugin manager's ConfigPageForm, which persists them through the
+ * profile's config editor and applies them live; credential changes restart the
+ * Feishu long connection.
  */
 window.__ModuleLoader__.load({
   id: "dsh-feishu-plugin",

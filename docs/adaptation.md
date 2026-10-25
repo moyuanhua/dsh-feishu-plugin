@@ -100,11 +100,11 @@ DSH：
 ## 8. 飞书侧保留的产品能力
 
 - 单聊长连接（WSClient），不监听端口、不需要公网；
-- 话题 = 会话；
+- 话题 → 会话（一个会话可绑定多个话题，每次进入新开话题）；
 - 主聊天流管理台；
 - `/new` 表单（目录 / 模型 / 权限）；
 - 会话列表、翻页、进入话题；
-- 流式运行卡、工具调用、最终答案、强制停止；
+- 流式运行卡、思考/工具抽屉、最终答案、强制停止；
 - 审批卡、提问卡；
 - 图片 / 文件接收；
 - owner 绑定 / allowlist / 消息去重 / 过期消息过滤；
@@ -113,7 +113,7 @@ DSH：
 ## 9. 有意没抄的部分
 
 - 跨 location 的网关 leader 选举与位置保活（DSH 不需要）；
-- OpenCode 的 `quickNew` AI 意图识别（当前用确定性管理台卡片，避免额外模型调用与歧义）；
+- OpenCode 的 `quickNew` 实现细节（DSH 版用自己的 JSON 意图协议 + clarify 多轮历史，不照搬其 generate 会话方案）；
 - OpenCode 的 `permission.evaluate` 规则引擎（DSH 用权限预设）；
-- OpenCode 的 resume 摘要 / compaction 卡片（DSH Web 已有原生能力；插件暂不重复）；
+- OpenCode 的 resume 摘要卡（DSH 版改为读取 `sessionQuery.readSurface`，进入话题时附简介；不做隐式 compaction）；
 - OpenCode 的 `feishu.json` 多来源配置优先级（DSH 统一走 Cordis Config + profile patch）。

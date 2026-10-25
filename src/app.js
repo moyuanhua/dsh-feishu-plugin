@@ -323,9 +323,13 @@ export class FeishuApp {
       const prompt = buildIntentPrompt({ text, ...context, history });
       // Intent recognition follows the same default model configured on the
       // plugin page; there is no separate intent-model setting.
+      // opencode-go requires a routing session header; reuse the most recent
+      // DSH session id (no new session is created for intent recognition).
+      const routingSessionId = context.sessions[0]?.sessionId;
       const raw = await this.bridge.completeText({
         system: INTENT_SYSTEM,
         prompt,
+        ...(routingSessionId ? { sessionId: routingSessionId } : {}),
         maxTokens: 500,
         timeoutMs: this.config.intentTimeoutMs,
       });

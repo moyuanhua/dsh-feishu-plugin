@@ -1,6 +1,6 @@
 # 验证记录
 
-日期：2026-10-24 21:55（Asia/Shanghai）
+日期：2026-10-25 11:40（Asia/Shanghai）
 
 ## 已完成
 
@@ -8,16 +8,16 @@
 |---|---|
 | git | `2.50.1 (Apple Git-155)`，已可用 |
 | 参考仓库 | `/Users/code/wps/opencode-feishu-plugin` 已 clone |
-| 插件构建 | `dsh-feishu-plugin` 0.4.0：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
-| 插件安装 | `dsh-feishu-plugin` 0.4.0（tarball）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
+| 插件构建 | `dsh-feishu-plugin` 0.5.6：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
+| 插件安装 | `dsh-feishu-plugin` 0.5.6（本地 link）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
 | 飞书凭据校验 | tenant_access_token / bot info 返回 `code: 0` |
 | 飞书 WS（独立 SDK 测试） | 使用同一组凭据 `onReady` 触发，`ws client ready` |
 | 插件 WS 连接 | 日志出现「飞书长连接已就绪（收到 ready）」，连接状态 `state: connected` |
 | 配置页合并 | 同一包内 Client 模块注册配置页；插件详情页直接显示 App ID / Secret / 调试日志表单 |
 | 新图标 | DSH 鲸鱼 + 飞书蓝气泡构图，128px / 48px 两档渲染检查通过 |
-| 卡片按钮刷新 | 卡片更新改为在 `card.action.trigger` 回调响应里返回 `card`（并行延迟 patch 兜底），避免 Feishu 在回调结束后用原卡片覆盖 |
+| 卡片按钮刷新 | 列表/翻页类按钮在回调响应返回卡片；进入/创建话题类按钮只返回 toast，回调后再 patch，避免与新话题创建冲突 |
 | 调试开关 | `debugLog` volatile 字段：插件页勾选即强制 debug 级别，日志仍写 `feishu.log` |
-| 工具折叠 | 运行卡永远只展开最新一个工具，历史工具折叠为摘要；最多保留 12 个 |
+| 工具抽屉 | 工具全部收在一个常驻折叠抽屉，只显示总次数；展开见明细；最多保留 12 个 |
 | 长连接观测 | 60s 心跳日志（state/inboundCount/lastInboundAgoMs/reconnectAttempts），状态变化单独记录；debugLog 打开后含 SDK ping/pong trace |
 | 长连接自愈 | `pingTimeout=30` + 60s 状态 watchdog；半开连接自动断开重连，状态写日志 |
 | 意图兜底 | 模型失败时确定性回退：识别到列表/进入/任务文本仍可用默认目录开预填表单 |
@@ -37,7 +37,7 @@
 | Web 配置页 | headless Chrome 实测：插件页 → 飞书桥接 → 配置，App ID 回显正确 |
 | 配置页保存 | 通过页面写入 App Secret，提示「已保存」 |
 | 实时重连 | 页面把 App ID 改成测试值保存后，日志出现「飞书凭据已更新，长连接已重启」并以新 App ID 启动；随后改回并再次重启成功 |
-| 单元测试 | `node --test` 8 项全部通过 |
+| 单元测试 | `node --test` 25 项全部通过 |
 
 ## 尚未实测
 
