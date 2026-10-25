@@ -83,10 +83,10 @@ export class RunCards {
     return run;
   }
 
-  schedule(run, immediate = false) {
+  schedule(run, immediate = false, delayOverride) {
     if (run.finished && !immediate) return;
     if (run.patchTimer) return;
-    const delay = immediate ? 0 : this.config.streamThrottleMs;
+    const delay = immediate ? 0 : (delayOverride ?? this.config.streamThrottleMs);
     run.patchTimer = setTimeout(() => {
       run.patchTimer = undefined;
       void this.patch(run);
@@ -213,8 +213,10 @@ export class RunCards {
       run.streamingText = truncate(`${run.streamingText}${chunk.text}`, this.config.maxAnswerChars + 2_000);
       this.schedule(run);
     } else if (chunk.type === "reasoning-delta" && chunk.text) {
+      // Keep the chain for the collapsed panel, but do not re-render the card
+      // on every token. One status update per second keeps the height stable.
       run.streamingReasoning = truncate(`${run.streamingReasoning}${chunk.text}`, 4_000);
-      this.schedule(run);
+      this.schedule(run, false, 1_000);
     }
   }
 

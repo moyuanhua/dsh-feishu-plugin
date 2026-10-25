@@ -116,8 +116,9 @@ export function createdHintCard(title, lines) {
   });
 }
 
-export function sessionListCard({ sessions, page, pageSize, currentSessionId, now }) {
+export function sessionListCard({ sessions, page, pageSize, currentSessionId, now, title = "🧩 DSH 会话", intro }) {
   const elements = [];
+  if (intro) elements.push(md(intro));
   const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
   const safePage = Math.min(Math.max(0, page), pageCount - 1);
   const rows = sessions.slice(safePage * pageSize, safePage * pageSize + pageSize);
@@ -143,7 +144,7 @@ export function sessionListCard({ sessions, page, pageSize, currentSessionId, no
   elements.push(hr());
   elements.push({ tag: "column_set", flex_mode: "none", columns: controls.map((b) => ({ tag: "column", width: "auto", elements: [b] })) });
   elements.push(note(`第 ${safePage + 1}/${pageCount} 页 · 共 ${sessions.length} 个会话。进入会新开一个话题并绑定该会话。`));
-  return card({ title: "🧩 DSH 会话", template: "blue", elements });
+  return card({ title, template: "blue", elements });
 }
 
 export function newSessionFormCard({ values = {}, error, models = [], perms = [], dirs = [], roots = [], defaultModel }) {
@@ -466,32 +467,57 @@ export function runCard({ run, maxAnswerChars }) {
             : "🤖 处理中";
   const template = status === "done" ? "green" : status === "error" ? "red" : status === "stopped" ? "grey" : "blue";
 
+  const answer = (run.streamingText || run.text || "").trim();
+  const reasoning = (run.streamingReasoning || "").trim();
+  const elapsed = run.startedAt ? Date.now() - run.startedAt : 0;
+
   const meta = [];
   if (run.model) meta.push(`🧠 ${run.model}`);
   if (run.perm) meta.push(`🔐 ${run.perm}`);
-  if (run.startedAt) meta.push(`⏱ ${formatDuration(Date.now() - run.startedAt)}`);
+  meta.push(`⏱ ${formatDuration(elapsed)}`);
   if (run.turn) meta.push(`第 ${run.turn} 轮`);
   if (run.error) meta.push(`⚠️ ${truncate(run.error, 1_000)}`);
 
+  // Fixed skeleton: status / thinking / tools / answer / stop. Sections never
+  // swap places, so streaming does not collapse the card height.
+  const statusLine =
+    status === "done"
+      ? "✅ 完成"
+      : status === "error"
+        ? "❌ 出错"
+        : status === "stopped"
+          ? "⏹ 已停止"
+          : answer
+            ? "✍️ 正在生成回答…"
+            : "💭 正在思考…";
+
   const elements = [];
-  elements.push(md(meta.join(" · ") || "已收到消息"));
+  elements.push(md(`${meta.join(" · ")}\n${statusLine}`));
+
+  if (reasoning) {
+    elements.push(
+      collapsiblePanel({
+        title: `💭 思考过程${status === "done" || status === "error" || status === "stopped" ? "" : "（进行中）"}`,
+        expanded: false,
+        border: "grey",
+        body: truncate(reasoning, 1_500),
+      }),
+    );
+  }
+
   if (run.tools.length) {
-    elements.push(hr());
     elements.push(...toolElements(run));
     if ((run.toolTotal ?? run.tools.length) > run.tools.length) {
       elements.push(note(`…已省略前 ${run.toolTotal - run.tools.length} 次工具调用`));
     }
   }
-  const text = (run.streamingText || run.text || "").trim();
-  if (text) {
+
+  if (answer) {
     elements.push(hr());
-    elements.push(md(truncate(text, maxAnswerChars)));
-    if (text.length > maxAnswerChars) {
+    elements.push(md(truncate(answer, maxAnswerChars)));
+    if (answer.length > maxAnswerChars) {
       elements.push(note("回答过长，卡片已截断；完整内容可在 DSH Web 会话里查看。"));
     }
-  } else if (run.streamingReasoning) {
-    elements.push(hr());
-    elements.push(note(`思考中… ${truncate(run.streamingReasoning, 600)}`));
   }
 
   if (run.canStop) {

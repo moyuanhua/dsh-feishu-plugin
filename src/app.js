@@ -362,6 +362,23 @@ export class FeishuApp {
         return;
       }
 
+      if (resolved.intent === "open") {
+        const views = await this.bridge.views();
+        await this.finishThinking(
+          ack.messageId,
+          message.chatId,
+          sessionListCard({
+            sessions: views,
+            page: 0,
+            pageSize: this.config.sessionPageSize,
+            title: "🧭 开启会话",
+            intro: "想新建一个会话，还是继续最近的会话？直接点下面的按钮即可。",
+          }),
+        );
+        this.consolePending.delete(message.chatId);
+        return;
+      }
+
       if (resolved.intent === "create") {
         const extras = await this.formExtras();
         const card = newSessionFormCard({
@@ -434,6 +451,19 @@ export class FeishuApp {
             ack.messageId,
             message.chatId,
             sessionListCard({ sessions: views, page: 0, pageSize: this.config.sessionPageSize }),
+          );
+        } else if (fallback.intent === "open") {
+          const views = await this.bridge.views();
+          await this.finishThinking(
+            ack.messageId,
+            message.chatId,
+            sessionListCard({
+              sessions: views,
+              page: 0,
+              pageSize: this.config.sessionPageSize,
+              title: "🧭 开启会话",
+              intro: "想新建一个会话，还是继续最近的会话？直接点下面的按钮即可。",
+            }),
           );
         } else if (fallback.intent === "enter") {
           const opened = await this.openSessionThread(

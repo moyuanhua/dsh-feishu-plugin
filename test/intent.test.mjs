@@ -71,6 +71,13 @@ test("resolves enter by 1-based index, id prefix and title", () => {
   assert.equal(ambiguous.intent, "clarify");
 });
 
+test("open intent is recognized and falls back without the model", () => {
+  assert.equal(parseIntentDecision('{"intent":"open"}').intent, "open");
+  assert.equal(resolveIntent({ intent: "open" }, context).intent, "open");
+  assert.equal(fallbackIntent("开启会话", context).intent, "open");
+  assert.equal(fallbackIntent("继续", context).intent, "open");
+});
+
 test("deterministic fallback keeps create/list/enter usable without the model", () => {
   const create = fallbackIntent("帮我修一下 dsh 飞书插件", context);
   assert.equal(create.intent, "create");

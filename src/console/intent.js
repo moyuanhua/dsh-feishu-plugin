@@ -8,14 +8,15 @@
 import { isAbsolute, normalize } from "node:path";
 import { str, truncate } from "../utils.js";
 
-export const INTENTS = ["create", "list", "enter", "chat", "clarify"];
+export const INTENTS = ["create", "list", "enter", "open", "chat", "clarify"];
 
 export const INTENT_SYSTEM = [
   "你是飞书 DSH 管理台的意图识别器。用户在管理台（尚未进入任何会话）发来一条消息。",
   "只输出一个 JSON 对象，不要 markdown 代码块，不要解释。",
-  '{"intent":"create|list|enter|chat|clarify","dir":"<绝对路径>","dir_source":"given|existing|new|default","title":"<不超过30字>","model":"<provider/model 或空>","perm":"<权限值 或空>","target":"<要进入的会话：序号/标题关键词/id 前缀>","question":"<需要向用户确认的一句话>","reason":"<一句话理由>"}',
+  '{"intent":"create|list|enter|open|chat|clarify","dir":"<绝对路径>","dir_source":"given|existing|new|default","title":"<不超过30字>","model":"<provider/model 或空>","perm":"<权限值 或空>","target":"<要进入的会话：序号/标题关键词/id 前缀>","question":"<需要向用户确认的一句话>","reason":"<一句话理由>"}',
   "规则：",
   "- 看会话列表、有哪些会话 → intent=list。",
+  "- 只说“开启/开始/进入/继续会话”，但没给具体是哪一个 → intent=open（管理台会给最近会话 + 新建/列表选择卡）。",
   "- 继续/进入/切换已有会话（打开第N个、继续上次那个、进入 xxx）→ intent=enter，target 填序号、标题关键词或 id 前缀；无法确定 → intent=clarify。",
   "- 要新建一个会话去做开发/操作/聊天任务 → intent=create。",
   "- 闲聊、问候、问用法、无法归类 → intent=chat。",
@@ -223,9 +224,11 @@ export function fallbackIntent(text, context = {}) {
   if (/(有哪些|列出|所有|查看).{0,6}会话|会话.{0,4}列表/i.test(value)) return { intent: "list" };
   if (/^(继续|进入|打开|切换|回到)/.test(value)) {
     const target = value.replace(/^(继续|进入|打开|切换|回到)\s*/, "").replace(/(会话|话题)$/, "").trim();
+    if (!target || /^(一个|一下|会话|话题|吧|呢|啊|呀)+$/.test(target)) return { intent: "open" };
     const resolved = resolveIntent({ intent: "enter", target }, context);
     return resolved?.intent === "enter" ? resolved : { intent: "chat" };
   }
+  if (/^(开启|开始|恢复|打开|进入|继续).{0,4}(会话|话题)?\s*$/.test(value)) return { intent: "open" };
   if (/^(你好|您好|hi|hello|在吗|谢谢|多谢)/i.test(value) && value.length < 12) {
     return { intent: "chat" };
   }
@@ -244,6 +247,7 @@ export function fallbackIntent(text, context = {}) {
 export function resolveIntent(decision, context) {
   if (!decision) return undefined;
   if (decision.intent === "list") return { intent: "list" };
+  if (decision.intent === "open") return { intent: "open" };
   if (decision.intent === "chat") return { intent: "chat" };
   if (decision.intent === "clarify") {
     return { intent: "clarify", question: decision.question || "能再说具体一点吗？" };

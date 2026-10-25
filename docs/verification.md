@@ -21,6 +21,8 @@
 | 长连接观测 | 60s 心跳日志（state/inboundCount/lastInboundAgoMs/reconnectAttempts），状态变化单独记录；debugLog 打开后含 SDK ping/pong trace |
 | 长连接自愈 | `pingTimeout=30` + 60s 状态 watchdog；半开连接自动断开重连，状态写日志 |
 | 意图兜底 | 模型失败时确定性回退：识别到列表/进入/任务文本仍可用默认目录开预填表单 |
+| 主会话 open | 只说“开启会话”时出选择卡，不误判成新建；意图枚举含 open |
+| 流式卡片 | 固定骨架 + 思考面板折叠 + 思考状态每秒刷新；回答/工具不互相替换 |
 | 意图识别 | 主聊天流普通文本 → `ctx.llm` 一次性 JSON 意图分类；目录/模型/会话全部二次校验；失败回退管理台 |
 | 话题标题 | 进入/创建会话时卡片 header 使用 DSH 会话标题，飞书话题列表显示真实标题 |
 | 话题路由 | 每次进入新建话题并绑定已有 DSH 会话（参考 OpenCode resume）；回答跟随用户发言话题 |

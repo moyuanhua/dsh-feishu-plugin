@@ -196,6 +196,27 @@ test("runCard always shows only the newest tool and folds the rest", () => {
   assert.match(JSON.stringify(done), /✅ \*\*bash\*\* — echo 4/);
 });
 
+test("runCard keeps a fixed skeleton with a collapsed thinking panel", () => {
+  const card = runCard({
+    run: {
+      sessionId: "s",
+      status: "running",
+      startedAt: Date.now(),
+      tools: [{ callId: "c1", name: "bash", preview: "ls", status: "running" }],
+      toolTotal: 1,
+      streamingReasoning: "先看看目录，再决定怎么改。",
+      streamingText: "",
+      canStop: true,
+    },
+    maxAnswerChars: 4_000,
+  });
+  const json = JSON.stringify(card);
+  assert.match(json, /思考过程/);
+  assert.match(json, /正在思考/);
+  assert.match(json, /collapsible_panel/);
+  assert.match(json, /强制停止/);
+});
+
 test("every card builder produces serializable JSON 2.0", () => {
   const cards = [
     helpCard(),
