@@ -928,8 +928,10 @@ export class FeishuApp {
       );
       // Like the OpenCode plugin: the submitted form card itself turns into
       // the session card; the separate card in the new topic is its root.
-      const card = openedSessionCard({ view: opened.view, style: "created" });
-      return this.respondCard(action, card, { type: "success", content: "会话已创建" });
+      // The form message becomes the new topic's anchor, so update it after the
+      // callback settles rather than returning a card in the same response.
+      this.patchCardSoon(action, openedSessionCard({ view: opened.view, style: "created" }));
+      return { toast: { type: "success", content: "会话已创建" } };
     } catch (error) {
       this.log.warn("表单建会话失败", { error: describeError(error) });
       const extras = await this.formExtras().catch(() => ({ models: [], perms: [], dirs: [], defaultModel: undefined }));
@@ -1138,6 +1140,14 @@ export class FeishuApp {
     return { card: { type: "raw", data: card }, toast };
   }
 
+  patchCardSoon(action, card) {
+    if (!action?.messageId) return;
+    const timer = setTimeout(() => {
+      void this.sender.patchCard(action.messageId, card);
+    }, 1_200);
+    timer.unref?.();
+  }
+
   async handleCardAction(action) {
     this.log.info("收到卡片操作", {
       kind: isRecord(action.value) ? str(action.value.a) : "(none)",
@@ -1192,7 +1202,8 @@ export class FeishuApp {
 
     if (kind === "open") {
       const sessionId = str(value.s);
-      if (!sessionId) return { toast: { type: "error", content: "缺少会话" } };
+      this.log.info("进入会话请求", { sessionId, messageId: action.messageId, value });
+      if (!sessionId) return { toast: { type: "error", content: "缺少会话 ID" } };
       try {
         const opened = await this.openSessionThread(
           sessionId,
@@ -1201,13 +1212,26 @@ export class FeishuApp {
           action.operatorOpenId,
           "resumed",
         );
-        const card = openedSessionCard({ view: opened.view, style: "entered", brief: opened.brief });
-        return this.respondCard(action, card, {
-          type: "success",
-          content: opened.reused ? "已回到原有话题" : "已进入话题",
+        const view = opened?.view ?? (await this.bridge.viewOf(sessionId));
+        this.log.info("进入会话完成", {
+          sessionId,
+          threadId: opened?.threadId,
+          reused: opened?.reused === true,
+          title: view?.title,
         });
+        // Do not return the card in this callback: it starts a thread on the
+        // same message, and Feishu can reject a simultaneous card update.
+        // Patch the list card after the callback settles instead.
+        this.patchCardSoon(action, openedSessionCard({ view, style: "entered" }));
+        return { toast: { type: "success", content: opened?.reused ? "已回到原有话题" : "已进入话题" } };
       } catch (error) {
-        return { toast: { type: "error", content: truncate(describeError(error), 80) } };
+        const detail = describeError(error);
+        this.log.warn("进入会话失败", {
+          sessionId,
+          error: detail,
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        return { toast: { type: "error", content: truncate(detail || "进入会话失败", 80) } };
       }
     }
 
