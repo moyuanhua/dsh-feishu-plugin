@@ -198,7 +198,9 @@ export class RunCards {
       run.turn = Number(frame.turn) || run.turn;
       run.step = Number(frame.step) || run.step;
       run.streamingText = "";
-      run.streamingReasoning = "";
+      // A turn can contain several model steps (tool loop). Do not clear the
+      // previous step's reasoning here: if the next step has no thinking, the
+      // drawer should keep showing the last reasoning instead of "暂无".
       this.schedule(run);
       return;
     }
