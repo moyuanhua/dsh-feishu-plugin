@@ -2,6 +2,12 @@
 
 把飞书接进 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)：**一个飞书话题 = 一个 DSH 会话**，审批、提问、模型与权限切换都在飞书卡片里完成。
 
+## 演示
+
+[![Watch the 40s demo](docs/demo/cover-en.png)](docs/demo/dsh-feishu-promo-9x16-en.mp4)
+
+40 秒竖屏演示（英文旁白）：手机飞书远程操控 DSH 会话、语音输入、图片/文件、权限审批，以及插件配置页。
+
 这是 Host 插件（Cordis bundle），不是 OpenCode 插件；适配层完全使用 DSH 自己的服务：
 
 | 能力 | 使用的 DSH 服务 |
