@@ -4,9 +4,13 @@
 
 ## 演示
 
-[![Watch the 40s demo](docs/demo/cover-en.png)](docs/demo/dsh-feishu-promo-9x16-en.mp4)
+[![Demo preview](docs/demo/preview.gif)](https://cdn.jsdelivr.net/gh/moyuanhua/dsh-feishu-plugin@main/docs/demo/dsh-feishu-promo-9x16-en.mp4)
 
 40 秒竖屏演示（英文旁白）：手机飞书远程操控 DSH 会话、语音输入、图片/文件、权限审批，以及插件配置页。
+
+- [浏览器直接播放（jsDelivr）](https://cdn.jsdelivr.net/gh/moyuanhua/dsh-feishu-plugin@main/docs/demo/dsh-feishu-promo-9x16-en.mp4)
+- [MP4 下载](docs/demo/dsh-feishu-promo-9x16-en.mp4)
+- [在线播放页](docs/demo/index.html)（在仓库 Settings → Pages 选择 `/docs` 后可通过 GitHub Pages 打开）
 
 这是 Host 插件（Cordis bundle），不是 OpenCode 插件；适配层完全使用 DSH 自己的服务：
 
