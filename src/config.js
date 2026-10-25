@@ -101,12 +101,6 @@ export function resolveConfig(raw) {
     maxAnswerChars: number(unwrap(config.maxAnswerChars), 12_000, 1_000, 28_000),
     debugLog,
     consoleIntent: bool(unwrap(config.consoleIntent), false),
-    intentModel: isRecord(unwrap(config.intentModel))
-      ? {
-          provider: str(unwrap(config.intentModel).provider).trim(),
-          model: str(unwrap(config.intentModel).model).trim(),
-        }
-      : undefined,
     intentTimeoutMs: number(unwrap(config.intentTimeoutMs), 8_000, 2_000, 30_000),
     intentHistoryTurns: number(unwrap(config.intentHistoryTurns), 8, 0, 20),
     logLevel,

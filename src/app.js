@@ -321,14 +321,11 @@ export class FeishuApp {
     try {
       context = await this.intentContext();
       const prompt = buildIntentPrompt({ text, ...context, history });
-      const route =
-        this.config.intentModel?.provider && this.config.intentModel?.model
-          ? this.config.intentModel
-          : undefined;
+      // Intent recognition follows the same default model configured on the
+      // plugin page; there is no separate intent-model setting.
       const raw = await this.bridge.completeText({
         system: INTENT_SYSTEM,
         prompt,
-        ...(route ? { route } : {}),
         maxTokens: 500,
         timeoutMs: this.config.intentTimeoutMs,
       });

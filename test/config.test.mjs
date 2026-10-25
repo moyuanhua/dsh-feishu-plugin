@@ -27,12 +27,10 @@ test("console intent config is resolved with defaults", () => {
       appId: "x",
       appSecret: "y",
       consoleIntent: true,
-      intentModel: { provider: "p", model: "m" },
       intentTimeoutMs: 5000,
     }),
   );
   assert.equal(on.consoleIntent, true);
-  assert.equal(on.intentModel.provider, "p");
   assert.equal(on.intentTimeoutMs, 5000);
 });
 

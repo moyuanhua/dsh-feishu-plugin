@@ -21,6 +21,7 @@
 | 长连接观测 | 60s 心跳日志（state/inboundCount/lastInboundAgoMs/reconnectAttempts），状态变化单独记录；debugLog 打开后含 SDK ping/pong trace |
 | 长连接自愈 | `pingTimeout=30` + 60s 状态 watchdog；半开连接自动断开重连，状态写日志 |
 | 意图兜底 | 模型失败时确定性回退：识别到列表/进入/任务文本仍可用默认目录开预填表单 |
+| 意图模型 | 意图识别复用插件页配置的默认工作模型（defaultModel），不再有独立 intentModel |
 | 意图模型调用 | `prepareCall` 与 `stream` 使用同一份 config，修复 `INVALID_PREPARED_CALL`；标题支持 bigram 模糊匹配 |
 | 主会话意图 | “开启会话”由模型在会话列表里判断 create/enter；不确定则多轮 clarify；open 仅作模型失败兜底 |
 | 流式卡片 | 固定骨架 + 思考面板折叠 + 思考状态每秒刷新；回答/工具不互相替换 |

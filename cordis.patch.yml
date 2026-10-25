@@ -25,8 +25,5 @@
         debugLog: false
         # Main-chat natural-language session management (opt-in).
         consoleIntent: false
-        intentModel:
-          provider: ''
-          model: ''
         intentTimeoutMs: 8000
         intentHistoryTurns: 8

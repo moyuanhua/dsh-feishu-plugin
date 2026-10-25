@@ -10,10 +10,6 @@ export const Config = Schema.object({
   debugLog: Schema.boolean().default(false).volatile(),
   /** Main-chat natural-language session intent recognition (opt-in). */
   consoleIntent: Schema.boolean().default(false),
-  intentModel: Schema.object({
-    provider: Schema.string().default(""),
-    model: Schema.string().default(""),
-  }).default({ provider: "", model: "" }),
   intentTimeoutMs: Schema.number().default(8_000),
   intentHistoryTurns: Schema.number().default(8),
 
