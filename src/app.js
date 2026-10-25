@@ -802,7 +802,7 @@ export class FeishuApp {
     // existing topic, otherwise two topics would route to the same session and
     // the run card could answer in the wrong one.
     const existingAlias = style === "created" ? undefined : this.state.threadForSession(sessionId);
-    const existing = existingAlias ? this.state.threads[existingAlias] : undefined;
+    const existing = existingAlias ? this.state.threadLink(existingAlias) : undefined;
     if (existing?.anchorMessageId) {
       const reused = await this.sender.replyCard(
         existing.anchorMessageId,
