@@ -71,9 +71,10 @@ test("resolves enter by 1-based index, id prefix and title", () => {
   assert.equal(ambiguous.intent, "clarify");
 });
 
-test("open intent is recognized and falls back without the model", () => {
-  assert.equal(parseIntentDecision('{"intent":"open"}').intent, "open");
-  assert.equal(resolveIntent({ intent: "open" }, context).intent, "open");
+test("ambiguous open requests fall back to the chooser without the model", () => {
+  // The model is expected to decide create/enter/clarify itself; "open" is
+  // only a deterministic fallback for when the model call fails.
+  assert.equal(parseIntentDecision('{"intent":"open"}'), undefined);
   assert.equal(fallbackIntent("开启会话", context).intent, "open");
   assert.equal(fallbackIntent("继续", context).intent, "open");
 });
