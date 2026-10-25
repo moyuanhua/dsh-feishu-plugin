@@ -60,7 +60,7 @@ test("falls back to the default directory and asks when outside roots", () => {
   assert.equal(fallback.directory, "/Users/code/wps");
   assert.equal(fallback.dirSource, "default");
   const outside = resolveIntent({ intent: "create", directory: "/tmp/elsewhere" }, context);
-  assert.equal(outside.intent, "clarify");
+  assert.equal(outside.intent, "chat");
 });
 
 test("resolves enter by 1-based index, id prefix and title", () => {
@@ -69,7 +69,7 @@ test("resolves enter by 1-based index, id prefix and title", () => {
   assert.equal(resolveIntent({ intent: "enter", target: "股票" }, context).sessionId, "session-bbb");
   assert.equal(resolveIntent({ intent: "enter", target: "飞书插件开发" }, context).sessionId, "session-aaa");
   const ambiguous = resolveIntent({ intent: "enter", target: "session" }, context);
-  assert.equal(ambiguous.intent, "clarify");
+  assert.equal(ambiguous.intent, "chat");
 });
 
 test("ambiguous open requests fall back to the chooser without the model", () => {
@@ -80,18 +80,15 @@ test("ambiguous open requests fall back to the chooser without the model", () =>
   assert.equal(fallbackIntent("继续", context).intent, "open");
 });
 
-test("deterministic fallback keeps create/list/enter usable without the model", () => {
-  const create = fallbackIntent("帮我修一下 dsh 飞书插件", context);
-  assert.equal(create.intent, "create");
-  assert.equal(create.directory, "/Users/code/wps");
-  assert.match(create.title, /飞书插件/);
+test("deterministic fallback is one-shot: list/enter or console", () => {
+  assert.equal(fallbackIntent("帮我修一下 dsh 飞书插件", context).intent, "chat");
   assert.equal(fallbackIntent("有哪些会话", context).intent, "list");
   assert.equal(fallbackIntent("你好", context).intent, "chat");
   assert.equal(fallbackIntent("进入飞书插件修复", context).sessionId, "session-aaa");
+  assert.equal(fallbackIntent("开启会话", context).intent, "open");
 });
 
-test("unknown clarify question gets a usable default", () => {
-  const resolved = resolveIntent({ intent: "clarify" }, context);
-  assert.equal(resolved.intent, "clarify");
-  assert.ok(resolved.question.length > 0);
+test("clarify is no longer a model intent; ambiguity goes to the console", () => {
+  assert.equal(parseIntentDecision('{"intent":"clarify","question":"哪一个？"}'), undefined);
+  assert.equal(resolveIntent({ intent: "clarify" }, context).intent, "chat");
 });

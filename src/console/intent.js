@@ -8,19 +8,18 @@
 import { isAbsolute, normalize } from "node:path";
 import { str, truncate } from "../utils.js";
 
-export const INTENTS = ["create", "list", "enter", "chat", "clarify"];
+export const INTENTS = ["create", "list", "enter", "chat"];
 
 export const INTENT_SYSTEM = [
   "你是飞书 DSH 管理台的意图识别器。用户在管理台（尚未进入任何会话）发来一条消息。",
   "只输出一个 JSON 对象，不要 markdown 代码块，不要解释。",
-  '{"intent":"create|list|enter|chat|clarify","dir":"<绝对路径>","dir_source":"given|existing|new|default","title":"<不超过30字>","model":"<provider/model 或空>","perm":"<权限值 或空>","target":"<要进入的会话：序号/标题关键词/id 前缀>","question":"<需要向用户确认的一句话>","reason":"<一句话理由>"}',
+  '{"intent":"create|list|enter|chat","dir":"<绝对路径>","dir_source":"given|existing|new|default","title":"<不超过30字>","model":"<provider/model 或空>","perm":"<权限值 或空>","target":"<要进入的会话：序号/标题关键词/id 前缀>","question":"<需要向用户确认的一句话>","reason":"<一句话理由>"}',
   "规则：",
   "- 看会话列表、有哪些会话 → intent=list。",
   "- 用户说“开启/开始/进入/继续/恢复会话”时，先自己看候选会话并做决定：",
   "  · 能明确匹配一个会话（最近/上次/标题/项目名/序号）→ intent=enter，target 填序号、标题关键词或 id 前缀；",
-  "  · 有多个可能，或无法判断用户是要新建还是继续已有 → intent=clarify，并在 question 里列出 2-3 个候选让用户选；",
   "  · 用户明确说“新建/创建/新会话”，或描述一个要做的新任务 → intent=create。",
-  "- 不要猜：宁可 clarify 多问一轮，也不要随便新建或进错会话。",
+  "- 只有一句话能明确判断时才行动；判断不了、信息不够、或有歧义 → intent=chat（直接返回管理台），不要反问。",
   "- 要新建一个会话去做开发/操作/聊天任务 → intent=create。",
   "- 闲聊、问候、问用法、无法归类 → intent=chat。",
   "- 建会话时必须尽量自己决定目录，不要让用户手输路径：",
@@ -28,12 +27,12 @@ export const INTENT_SYSTEM = [
   "  ② 用户提到项目/目录/仓库名，能匹配候选目录 → dir=候选原文，dir_source=existing；",
   "  ③ 没提到目录但存在默认目录 → dir=默认目录，dir_source=default；",
   "  ④ 能在允许根目录下为任务起一个合理的英文小写短横线目录名 → dir=<允许根目录>/<slug>，dir_source=new；",
-  "  ⑤ 只有候选互相冲突、或完全无法判断用哪个目录时 → intent=clarify，并在 question 里给出 2-3 个候选。",
+  "  ⑤ 如果候选互相冲突、或完全无法判断用哪个目录 → intent=chat（回管理台），不要反问。",
   "- dir 必须是绝对路径；不要编造候选/允许根目录之外的既有路径。",
   "- model 只能从候选模型里精确复制 provider/model；用户没说就留空。",
   "- perm 只能从候选权限里选；用户没说就留空。",
   "- 会话标题尽量从任务里提炼，30 字以内，不要用“新会话”这种占位词。",
-  "- 历史对话是上一轮 clarify 的上下文：用户的新消息可能只是回答上一轮的问题，要结合历史继续判断；仍然不确定就继续 clarify。",
+
 ].join("\n");
 
 function bullet(items) {
@@ -266,16 +265,9 @@ export function fallbackIntent(text, context = {}) {
   if (/^(你好|您好|hi|hello|在吗|谢谢|多谢)/i.test(value) && value.length < 12) {
     return { intent: "chat" };
   }
-  const directory = context.defaults?.directory;
-  if (!directory) return { intent: "chat" };
-  return {
-    intent: "create",
-    directory,
-    dirSource: "default",
-    title: truncate(value.replace(/\s+/g, " "), 30),
-    ...(context.defaults?.model ? { model: context.defaults.model } : {}),
-    ...(context.defaults?.perm ? { perm: context.defaults.perm } : {}),
-  };
+  // One-shot UX: the deterministic fallback never guesses a new session.
+  // Anything not clearly list/enter/open goes back to the management console.
+  return { intent: "chat" };
 }
 
 export function resolveIntent(decision, context) {
@@ -283,17 +275,18 @@ export function resolveIntent(decision, context) {
   if (decision.intent === "list") return { intent: "list" };
   if (decision.intent === "chat") return { intent: "chat" };
   if (decision.intent === "clarify") {
-    return { intent: "clarify", question: decision.question || "能再说具体一点吗？" };
+    // One-shot UX: no follow-up questions. Ambiguity goes back to the console.
+    return { intent: "chat" };
   }
   if (decision.intent === "enter") {
     const resolved = resolveEnter(decision, context.sessions ?? []);
     return resolved.sessionId
       ? { intent: "enter", sessionId: resolved.sessionId, title: decision.title }
-      : { intent: "clarify", question: resolved.question };
+      : { intent: "chat" };
   }
   if (decision.intent === "create") {
     const directory = resolveDirectory(decision, context);
-    if (!directory.directory) return { intent: "clarify", question: directory.question };
+    if (!directory.directory) return { intent: "chat" };
     const model = matchModel(decision.model, context.models ?? []);
     const perm = matchPerm(decision.perm, context.perms ?? []);
     return {

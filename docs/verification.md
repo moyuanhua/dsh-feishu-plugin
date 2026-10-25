@@ -8,8 +8,8 @@
 |---|---|
 | git | `2.50.1 (Apple Git-155)`，已可用 |
 | 参考仓库 | `/Users/code/wps/opencode-feishu-plugin` 已 clone |
-| 插件构建 | `dsh-feishu-plugin` 0.5.8：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
-| 插件安装 | `dsh-feishu-plugin` 0.5.8（本地 link）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
+| 插件构建 | `dsh-feishu-plugin` 0.5.9：`lib/index.js` 自包含 Host + `lib/client.js` 配置页 |
+| 插件安装 | `dsh-feishu-plugin` 0.5.9（本地 link）→ `application: applied`；插件列表只有 1 个「飞书桥接」 |
 | 飞书凭据校验 | tenant_access_token / bot info 返回 `code: 0` |
 | 飞书 WS（独立 SDK 测试） | 使用同一组凭据 `onReady` 触发，`ws client ready` |
 | 插件 WS 连接 | 日志出现「飞书长连接已就绪（收到 ready）」，连接状态 `state: connected` |
@@ -23,7 +23,7 @@
 | 意图兜底 | 模型失败时确定性回退：识别到列表/进入/任务文本仍可用默认目录开预填表单 |
 | 意图模型 | 意图识别复用插件页配置的默认工作模型（defaultModel），不再有独立 intentModel |
 | 意图模型调用 | `prepareCall` 与 `stream` 使用同一份 config，修复 `INVALID_PREPARED_CALL`；标题支持 bigram 模糊匹配 |
-| 主会话意图 | “开启会话”由模型在会话列表里判断 create/enter；不确定则多轮 clarify；open 仅作模型失败兜底 |
+| 主会话意图 | 一次性判断：能明确 create/enter/list 就执行，判断不了直接回管理台，不做 clarify 多轮 |
 | 思考保留 | 工具循环进入下一步时不再清空上一步 reasoning，思考抽屉保留最近思考内容 |
 | 抽屉常驻 | 思考/工具两个抽屉始终存在并默认折叠；工具只显示次数，展开见明细 |
 | 流式卡片 | 固定骨架 + 思考面板折叠 + 思考状态每秒刷新；回答/工具不互相替换 |

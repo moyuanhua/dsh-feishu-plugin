@@ -86,7 +86,6 @@ export class FeishuApp {
     this.signer = createSigner(config.signSecret);
     this.dedup = new Dedup();
     this.threadCreates = new Map();
-    this.consolePending = new Map();
     this.disposers = [];
     this.gateway = undefined;
     this.startedAt = Date.now();
@@ -157,7 +156,6 @@ export class FeishuApp {
     }
     this.disposers = [];
     this.threadCreates.clear();
-    this.consolePending.clear();
   }
 
   /**
@@ -303,13 +301,6 @@ export class FeishuApp {
       return;
     }
 
-    const pending = this.consolePending.get(message.chatId);
-    if (pending && Date.now() - pending.at > 10 * 60_000) {
-      this.consolePending.delete(message.chatId);
-    }
-    const activePending = this.consolePending.get(message.chatId);
-    const history = activePending?.history ?? [];
-
     const ack = await this.sender.sendCard(message.chatId, thinkingCard());
     if (!ack.ok || !ack.messageId) {
       await this.sender.sendCard(message.chatId, mainHintCard({}));
@@ -320,7 +311,7 @@ export class FeishuApp {
     let context;
     try {
       context = await this.intentContext();
-      const prompt = buildIntentPrompt({ text, ...context, history });
+      const prompt = buildIntentPrompt({ text, ...context });
       // Intent recognition follows the same default model configured on the
       // plugin page; there is no separate intent-model setting.
       // opencode-go requires a routing session header; reuse the most recent
@@ -348,7 +339,6 @@ export class FeishuApp {
 
       if (!resolved) {
         await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
-        this.consolePending.delete(message.chatId);
         return;
       }
 
@@ -359,7 +349,6 @@ export class FeishuApp {
           message.chatId,
           sessionListCard({ sessions: views, page: 0, pageSize: this.config.sessionPageSize }),
         );
-        this.consolePending.delete(message.chatId);
         return;
       }
 
@@ -376,7 +365,6 @@ export class FeishuApp {
             intro: "想新建一个会话，还是继续最近的会话？直接点下面的按钮即可。",
           }),
         );
-        this.consolePending.delete(message.chatId);
         return;
       }
 
@@ -393,13 +381,11 @@ export class FeishuApp {
           roots: this.config.allowedRoots,
         });
         await this.finishThinking(ack.messageId, message.chatId, card);
-        this.consolePending.delete(message.chatId);
         return;
       }
 
       if (resolved.intent === "enter") {
-        this.consolePending.delete(message.chatId);
-        const opened = await this.openSessionThread(
+          const opened = await this.openSessionThread(
           resolved.sessionId,
           ack.messageId,
           message.chatId,
@@ -414,24 +400,7 @@ export class FeishuApp {
         return;
       }
 
-      if (resolved.intent === "clarify") {
-        const question = resolved.question || "能再说具体一点吗？";
-        await this.finishThinking(
-          ack.messageId,
-          message.chatId,
-          compactResultCard({ title: "🤔 需要确认", template: "blue", lines: [question] }),
-        );
-        const nextHistory = [
-          ...history,
-          { role: "user", text },
-          { role: "assistant", text: question },
-        ].slice(-Math.max(2, this.config.intentHistoryTurns * 2));
-        this.consolePending.set(message.chatId, { history: nextHistory, at: Date.now() });
-        return;
-      }
-
       await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
-      this.consolePending.delete(message.chatId);
     } catch (error) {
       this.log.warn("主聊天意图识别失败，尝试确定性回退", {
         error: describeError(error),
@@ -502,7 +471,6 @@ export class FeishuApp {
         this.log.warn("意图识别确定性回退失败", { error: describeError(fallbackError) });
         await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
       }
-      this.consolePending.delete(message.chatId);
     }
   }
 
@@ -591,7 +559,6 @@ export class FeishuApp {
   // ---- commands ----------------------------------------------------------
 
   async handleCommand({ message, command, sessionId, threadId }) {
-    this.consolePending.delete(message.chatId);
     const main = !threadId;
     const name = command.name;
 
@@ -862,7 +829,7 @@ export class FeishuApp {
         const parsed = Number.parseInt(args.trim(), 10);
         if (!Number.isFinite(parsed) || parsed < 1 || parsed > views.length) {
           await this.replyFor(message, errorCard("序号无效", `当前共 ${views.length} 个会话，请用 1–${views.length}。`));
-          return;
+        return;
         }
         index = parsed - 1;
       }
