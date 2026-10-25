@@ -195,6 +195,22 @@ function resolveDirectory(decision, { dirs, roots, defaults }) {
   return { question: "要建在哪个目录？请发一个目录，或告诉我项目名。" };
 }
 
+function bigrams(text) {
+  const value = str(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const out = new Set();
+  for (let i = 0; i + 1 < value.length; i += 1) out.add(value.slice(i, i + 2));
+  return out;
+}
+
+function titleScore(target, title) {
+  const a = bigrams(target);
+  const b = bigrams(title);
+  if (a.size === 0 || b.size === 0) return 0;
+  let hit = 0;
+  for (const gram of a) if (b.has(gram)) hit += 1;
+  return hit / Math.min(a.size, b.size);
+}
+
 function resolveEnter(decision, sessions) {
   const target = str(decision.target).trim();
   if (!target) {
@@ -213,6 +229,20 @@ function resolveEnter(decision, sessions) {
   if (byTitle.length === 1) return { sessionId: byTitle[0].sessionId };
   if (byTitle.length > 1) {
     return { question: `匹配到多个会话：${byTitle.slice(0, 5).map((item) => `「${truncate(item.title, 30)}」`).join("、")}。请说得更具体，或直接发序号。` };
+  }
+  // Fuzzy title match handles reordered Chinese wording like
+  // “继续飞书插件开发” vs “开发dsh飞书插件”.
+  const scored = sessions
+    .map((item) => ({ item, score: titleScore(target, item.title || "") }))
+    .filter((entry) => entry.score >= 0.35)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length === 1) return { sessionId: scored[0].item.sessionId };
+  if (scored.length > 1) {
+    const [first, second] = scored;
+    if (first.score >= 0.6 && first.score - second.score >= 0.2) {
+      return { sessionId: first.item.sessionId };
+    }
+    return { question: `匹配到多个可能：${scored.slice(0, 4).map((entry) => `「${truncate(entry.item.title, 30)}」`).join("、")}。要进入哪一个？` };
   }
   return { question: `没有找到匹配「${truncate(target, 60)}」的会话。要新建一个，还是从 /sessions 列表里选？` };
 }

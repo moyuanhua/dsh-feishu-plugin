@@ -67,6 +67,7 @@ test("resolves enter by 1-based index, id prefix and title", () => {
   assert.equal(resolveIntent({ intent: "enter", target: "2" }, context).sessionId, "session-bbb");
   assert.equal(resolveIntent({ intent: "enter", target: "session-aaa" }, context).sessionId, "session-aaa");
   assert.equal(resolveIntent({ intent: "enter", target: "股票" }, context).sessionId, "session-bbb");
+  assert.equal(resolveIntent({ intent: "enter", target: "飞书插件开发" }, context).sessionId, "session-aaa");
   const ambiguous = resolveIntent({ intent: "enter", target: "session" }, context);
   assert.equal(ambiguous.intent, "clarify");
 });

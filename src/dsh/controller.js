@@ -225,11 +225,11 @@ export class DshBridge {
       let reasoning = "";
       let finish;
       const chunkTypes = {};
+      // Only add options that are not part of the prepared call config. Passing
+      // maxTokens/temperature/reasoningEffort again makes the prepared-call
+      // equality check fail with INVALID_PREPARED_CALL.
       const stream = call.stream({
         ...call.config,
-        maxTokens,
-        temperature: 0,
-        ...(reasoningEffort ? { reasoningEffort } : {}),
         system,
         messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
         signal: controller.signal,
