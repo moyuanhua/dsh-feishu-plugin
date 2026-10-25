@@ -18,6 +18,24 @@ test("volatile schema fields resolve through live references", () => {
   assert.deepEqual(config.allowedRoots, ["/tmp"]);
 });
 
+test("console intent config is resolved with defaults", () => {
+  const off = resolveConfig(Config({ appId: "x", appSecret: "y" }));
+  assert.equal(off.consoleIntent, false);
+  assert.equal(off.intentTimeoutMs, 8000);
+  const on = resolveConfig(
+    Config({
+      appId: "x",
+      appSecret: "y",
+      consoleIntent: true,
+      intentModel: { provider: "p", model: "m" },
+      intentTimeoutMs: 5000,
+    }),
+  );
+  assert.equal(on.consoleIntent, true);
+  assert.equal(on.intentModel.provider, "p");
+  assert.equal(on.intentTimeoutMs, 5000);
+});
+
 test("debugLog switch forces debug level", () => {
   const on = resolveConfig(Config({ appId: "x", appSecret: "y", debugLog: true }));
   assert.equal(on.debugLog, true);

@@ -8,6 +8,14 @@ export const Config = Schema.object({
   appSecret: Schema.string().role("secret").default("").volatile(),
   /** Debug-log switch, editable from the same page. */
   debugLog: Schema.boolean().default(false).volatile(),
+  /** Main-chat natural-language session intent recognition (opt-in). */
+  consoleIntent: Schema.boolean().default(false),
+  intentModel: Schema.object({
+    provider: Schema.string().default(""),
+    model: Schema.string().default(""),
+  }).default({ provider: "", model: "" }),
+  intentTimeoutMs: Schema.number().default(8_000),
+  intentHistoryTurns: Schema.number().default(8),
 
   domain: Schema.union(["feishu", "lark"]).default("feishu"),
   allowUsers: Schema.array(Schema.string()).default([]),

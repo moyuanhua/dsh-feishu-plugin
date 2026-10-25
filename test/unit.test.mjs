@@ -119,6 +119,31 @@ test("DshBridge.prompt passes the AbortSignal required by prompt admission", asy
   assert.ok(captured.signal instanceof AbortSignal);
 });
 
+test("completeText streams a one-shot LLM answer without creating a session", async () => {
+  const calls = [];
+  const llm = {
+    async prepareCall(config) {
+      return {
+        config,
+        async *stream(options) {
+          calls.push(options);
+          yield { type: "text-delta", text: '{"intent":' };
+          yield { type: "text-delta", text: '"list"}' };
+        },
+      };
+    },
+  };
+  const bridge = new DshBridge(
+    { get: (key) => (key === "llm" ? llm : undefined) },
+    { defaultModel: { provider: "p", model: "m" } },
+    { debug() {}, info() {}, warn() {}, error() {} },
+  );
+  const text = await bridge.completeText({ system: "sys", prompt: "hello" });
+  assert.equal(text, '{"intent":"list"}');
+  assert.equal(calls[0].system, "sys");
+  assert.equal(calls[0].messages[0].content[0].text, "hello");
+});
+
 test("sessionBrief extracts title, summary, last user and assistant text", async () => {
   const query = {
     async readSurface() {

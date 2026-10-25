@@ -16,8 +16,10 @@ import {
   runCard,
   sessionListCard,
   stoppedCard,
+  thinkingCard,
 } from "./cards.js";
 import { MAIN_ONLY, parseCommand } from "./commands.js";
+import { INTENT_SYSTEM, buildIntentPrompt, parseIntentDecision, resolveIntent } from "./console/intent.js";
 import { DshBridge } from "./dsh/controller.js";
 import { RunCards } from "./dsh/runs.js";
 import { FeishuApprovals } from "./dsh/approvals.js";
@@ -78,6 +80,7 @@ export class FeishuApp {
     this.signer = createSigner(config.signSecret);
     this.dedup = new Dedup();
     this.threadCreates = new Map();
+    this.consolePending = new Map();
     this.disposers = [];
     this.gateway = undefined;
     this.startedAt = Date.now();
@@ -147,6 +150,8 @@ export class FeishuApp {
       }
     }
     this.disposers = [];
+    this.threadCreates.clear();
+    this.consolePending.clear();
   }
 
   /**
@@ -286,9 +291,166 @@ export class FeishuApp {
   }
 
   async handleMainText(message) {
-    // The main chat is a management console only: recognized slash commands
-    // run, everything else gets the console card. No intent guessing.
-    await this.sender.sendCard(message.chatId, mainHintCard({}));
+    const text = str(message.text).trim();
+    if (!this.config.consoleIntent || !text) {
+      await this.sender.sendCard(message.chatId, mainHintCard({}));
+      return;
+    }
+
+    const pending = this.consolePending.get(message.chatId);
+    if (pending && Date.now() - pending.at > 10 * 60_000) {
+      this.consolePending.delete(message.chatId);
+    }
+    const activePending = this.consolePending.get(message.chatId);
+    const history = activePending?.history ?? [];
+
+    const ack = await this.sender.sendCard(message.chatId, thinkingCard());
+    if (!ack.ok || !ack.messageId) {
+      await this.sender.sendCard(message.chatId, mainHintCard({}));
+      return;
+    }
+
+    const started = Date.now();
+    try {
+      const context = await this.intentContext();
+      const prompt = buildIntentPrompt({ text, ...context, history });
+      const route =
+        this.config.intentModel?.provider && this.config.intentModel?.model
+          ? this.config.intentModel
+          : undefined;
+      const raw = await this.bridge.completeText({
+        system: INTENT_SYSTEM,
+        prompt,
+        ...(route ? { route } : {}),
+        maxTokens: 500,
+        timeoutMs: this.config.intentTimeoutMs,
+      });
+      const decision = parseIntentDecision(raw);
+      const resolved = resolveIntent(decision, context);
+      this.log.info("主聊天意图识别", {
+        ms: Date.now() - started,
+        intent: resolved?.intent,
+        rawIntent: decision?.intent,
+        target: decision?.target,
+        dir: resolved?.directory,
+        model: resolved?.model ? `${resolved.model.provider}/${resolved.model.model}` : undefined,
+        perm: resolved?.perm,
+        question: resolved?.question ? truncate(resolved.question, 80) : undefined,
+      });
+
+      if (!resolved) {
+        await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+        this.consolePending.delete(message.chatId);
+        return;
+      }
+
+      if (resolved.intent === "list") {
+        const views = await this.bridge.views();
+        await this.finishThinking(
+          ack.messageId,
+          message.chatId,
+          sessionListCard({ sessions: views, page: 0, pageSize: this.config.sessionPageSize }),
+        );
+        this.consolePending.delete(message.chatId);
+        return;
+      }
+
+      if (resolved.intent === "create") {
+        const extras = await this.formExtras();
+        const card = newSessionFormCard({
+          values: {
+            title: resolved.title ?? "",
+            dir: resolved.directory ?? "",
+            model: resolved.model,
+            perm: resolved.perm,
+          },
+          ...extras,
+          roots: this.config.allowedRoots,
+        });
+        await this.finishThinking(ack.messageId, message.chatId, card);
+        this.consolePending.delete(message.chatId);
+        return;
+      }
+
+      if (resolved.intent === "enter") {
+        this.consolePending.delete(message.chatId);
+        const opened = await this.openSessionThread(
+          resolved.sessionId,
+          ack.messageId,
+          message.chatId,
+          message.senderOpenId,
+          "resumed",
+        );
+        await this.finishThinking(
+          ack.messageId,
+          message.chatId,
+          openedSessionCard({ view: opened.view, style: "entered" }),
+        );
+        return;
+      }
+
+      if (resolved.intent === "clarify") {
+        const question = resolved.question || "能再说具体一点吗？";
+        await this.finishThinking(
+          ack.messageId,
+          message.chatId,
+          compactResultCard({ title: "🤔 需要确认", template: "blue", lines: [question] }),
+        );
+        const nextHistory = [
+          ...history,
+          { role: "user", text },
+          { role: "assistant", text: question },
+        ].slice(-Math.max(2, this.config.intentHistoryTurns * 2));
+        this.consolePending.set(message.chatId, { history: nextHistory, at: Date.now() });
+        return;
+      }
+
+      await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+      this.consolePending.delete(message.chatId);
+    } catch (error) {
+      this.log.warn("主聊天意图识别失败，回退管理台", {
+        error: describeError(error),
+        ms: Date.now() - started,
+      });
+      await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+      this.consolePending.delete(message.chatId);
+    }
+  }
+
+  async finishThinking(messageId, chatId, card) {
+    const patched = await this.sender.patchCard(messageId, card);
+    if (!patched.ok) await this.sender.sendCard(chatId, card);
+  }
+
+  async intentContext() {
+    const [views, catalog, extras] = await Promise.all([
+      this.bridge.views().catch(() => []),
+      this.bridge.modelCatalog().catch(() => ({ models: [], default: undefined })),
+      this.formExtras().catch(() => ({ models: [], perms: [], dirs: [] })),
+    ]);
+    const dirs = [];
+    const seen = new Set();
+    const pushDir = (path, label) => {
+      const value = str(path).trim();
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      dirs.push({ path: value, ...(label ? { label } : {}) });
+    };
+    pushDir(this.config.defaultDirectory, "默认");
+    for (const dir of extras.dirs ?? []) pushDir(dir.path, dir.name);
+    for (const view of views) if (view.cwd) pushDir(view.cwd, view.title);
+    return {
+      sessions: views.slice(0, 30),
+      dirs,
+      models: catalog.models ?? [],
+      perms: this.bridge.permissionCatalog().options ?? [],
+      roots: this.config.allowedRoots,
+      defaults: {
+        directory: this.config.defaultDirectory,
+        model: this.defaultModelSelection(),
+        perm: this.config.defaultPermissionPreset,
+      },
+    };
   }
 
   async createSessionInThread(message, threadId, rootId) {
@@ -340,6 +502,7 @@ export class FeishuApp {
   // ---- commands ----------------------------------------------------------
 
   async handleCommand({ message, command, sessionId, threadId }) {
+    this.consolePending.delete(message.chatId);
     const main = !threadId;
     const name = command.name;
 

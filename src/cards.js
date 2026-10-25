@@ -104,6 +104,10 @@ export function mainHintCard({ pendingKey, pendingText }) {
   return card({ title: "🧭 管理台", template: "blue", elements });
 }
 
+export function thinkingCard(text = "⏳ 正在理解你的意图…") {
+  return card({ title: "🧭 管理台", template: "blue", elements: [md(text)] });
+}
+
 export function createdHintCard(title, lines) {
   return card({
     title,

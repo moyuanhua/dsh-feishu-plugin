@@ -20,6 +20,7 @@
 | 工具折叠 | 运行卡永远只展开最新一个工具，历史工具折叠为摘要；最多保留 12 个 |
 | 长连接观测 | 60s 心跳日志（state/inboundCount/lastInboundAgoMs/reconnectAttempts），状态变化单独记录；debugLog 打开后含 SDK ping/pong trace |
 | 长连接自愈 | `pingTimeout=30` + 60s 状态 watchdog；半开连接自动断开重连，状态写日志 |
+| 意图识别 | 主聊天流普通文本 → `ctx.llm` 一次性 JSON 意图分类；目录/模型/会话全部二次校验；失败回退管理台 |
 | 话题路由 | 一个会话复用一个话题；活动话题锚点随消息更新；跨话题并发拒绝；审批/提问卡回复到活动锚点 |
 | 会话标识 | 进入老会话的主卡片与话题根卡都显示完整 `session-...` ID，便于在 DSH Web 里定位 |
 | 会话简介 | `sessionQuery.readSurface` 读取冷会话 surface；进入老会话时附历史摘要/上一条/上次回复，`/brief` 可重复读取 |

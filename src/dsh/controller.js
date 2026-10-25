@@ -178,6 +178,52 @@ export class DshBridge {
     }
   }
 
+  async defaultModelRoute() {
+    const configured = this.config.defaultModel;
+    if (configured?.provider && configured?.model) {
+      return { provider: configured.provider, model: configured.model };
+    }
+    const catalog = await this.modelCatalog();
+    if (catalog.default?.provider && catalog.default?.model) {
+      return { provider: catalog.default.provider, model: catalog.default.model };
+    }
+    if (catalog.models[0]) {
+      return { provider: catalog.models[0].provider, model: catalog.models[0].model };
+    }
+    throw new Error("没有可用的模型路由");
+  }
+
+  /** One-shot text completion through DSH's LLM service (no session is created). */
+  async completeText({ system, prompt, route, maxTokens = 600, timeoutMs = 8_000 }) {
+    const llm = this.ctx.get?.("llm") ?? this.ctx.llm;
+    if (!llm?.prepareCall) throw new Error("DSH llm 服务不可用");
+    const selected = route ?? (await this.defaultModelRoute());
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      const call = await llm.prepareCall(
+        { provider: selected.provider, model: selected.model, maxTokens },
+        controller.signal,
+      );
+      let text = "";
+      const stream = call.stream({
+        ...call.config,
+        maxTokens,
+        system,
+        messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+        signal: controller.signal,
+      });
+      for await (const chunk of stream) {
+        if (chunk?.type === "text-delta") text += chunk.text ?? "";
+      }
+      if (!text.trim()) throw new Error("模型返回为空");
+      return text;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async modelCatalog() {
     const catalog = await this.controller().modelCatalog();
     const groups = Array.isArray(catalog?.groups) ? catalog.groups : [];
