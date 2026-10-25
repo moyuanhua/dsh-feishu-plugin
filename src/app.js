@@ -798,23 +798,9 @@ export class FeishuApp {
               timer.unref?.();
             }),
           ]);
-    // One Feishu topic per DSH session: reopening a session must reuse its
-    // existing topic, otherwise two topics would route to the same session and
-    // the run card could answer in the wrong one.
-    const existingAlias = style === "created" ? undefined : this.state.threadForSession(sessionId);
-    const existing = existingAlias ? this.state.threadLink(existingAlias) : undefined;
-    if (existing?.anchorMessageId) {
-      const reused = await this.sender.replyCard(
-        existing.anchorMessageId,
-        openedSessionCard({ view, style: "resumed", brief }),
-      );
-      if (reused.ok) {
-        this.state.touchThread(existingAlias, existing.anchorMessageId);
-        this.log.info("复用已有话题", { sessionId, threadId: existingAlias });
-        return { sent: reused, threadId: existingAlias, view, brief, reused: true };
-      }
-      this.log.warn("复用已有话题失败，改为新开", { sessionId, error: reused.error });
-    }
+    // Match OpenCode's resume flow: every entry creates a fresh Feishu topic
+    // (card) and simply binds it to the existing DSH session. The previous
+    // topic stays intact; replies still follow the topic the user writes in.
     const sent = await this.sender.replyCard(anchorMessageId, openedSessionCard({ view, style, brief }), { replyInThread: true });
     if (!sent.ok) throw new Error(sent.error ?? "无法创建话题");
     const meta = sent.threadId ? undefined : await this.sender.getMessageMeta(sent.messageId);
@@ -849,26 +835,13 @@ export class FeishuApp {
         }
         index = parsed - 1;
       }
-      const opened = await this.openSessionThread(
+      await this.openSessionThread(
         views[index].sessionId,
         message.messageId,
         message.chatId,
         message.senderOpenId,
         "resumed",
       );
-      if (opened.reused) {
-        await this.replyFor(
-          message,
-          compactResultCard({
-            title: "已回到原有话题",
-            template: "blue",
-            lines: [
-              `会话 **${truncate(opened.view.title, 80)}** 已经绑定过话题，这次直接回到原话题继续。`,
-              "为避免同一会话在两个话题里分叉，没有新开话题。",
-            ],
-          }),
-        );
-      }
     } catch (error) {
       await this.replyFor(message, errorCard("进入会话失败", describeError(error)));
     }
@@ -1216,14 +1189,13 @@ export class FeishuApp {
         this.log.info("进入会话完成", {
           sessionId,
           threadId: opened?.threadId,
-          reused: opened?.reused === true,
           title: view?.title,
         });
         // Do not return the card in this callback: it starts a thread on the
         // same message, and Feishu can reject a simultaneous card update.
         // Patch the list card after the callback settles instead.
         this.patchCardSoon(action, openedSessionCard({ view, style: "entered" }));
-        return { toast: { type: "success", content: opened?.reused ? "已回到原有话题" : "已进入话题" } };
+        return { toast: { type: "success", content: "已进入话题" } };
       } catch (error) {
         const detail = describeError(error);
         this.log.warn("进入会话失败", {
