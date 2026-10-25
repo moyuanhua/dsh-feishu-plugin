@@ -244,14 +244,18 @@ export function newSessionFormCard({ values = {}, error, models = [], perms = []
 }
 
 export function openedSessionCard({ view, style = "resumed", brief }) {
+  // The Feishu topic name follows this card's header title, so show the real
+  // session title instead of a generic "已进入话题" status.
+  const headerTitle = truncate(view.title || "(未命名会话)", 60);
   const lines = [];
   if (style === "created") {
     lines.push("会话已创建。直接在这个话题里发消息即可开始。");
   } else if (style === "entered") {
-    const entered = [`**${truncate(view.title || "(未命名)", 100)}**`];
-    if (view.sessionId) entered.push("", `**会话 ID**：\`${view.sessionId}\``);
+    const entered = [];
+    if (view.sessionId) entered.push(`**会话 ID**：\`${view.sessionId}\``);
+    entered.push("", "已为这个会话打开新的飞书话题，请到话题里继续。");
     return card({
-      title: "✅ 已进入话题",
+      title: headerTitle,
       template: "green",
       elements: [md(entered.join("\n"))],
     });
@@ -259,7 +263,6 @@ export function openedSessionCard({ view, style = "resumed", brief }) {
     lines.push("已在这个话题里接入选中的 DSH 会话。直接发消息即可继续。");
   }
   lines.push("");
-  lines.push(`**标题**：${truncate(view.title || "(未命名)", 80)}`);
   if (view.sessionId) lines.push(`**会话 ID**：\`${view.sessionId}\``);
   if (view.cwd) lines.push(`**目录**：\`${truncateMiddle(view.cwd, 80)}\``);
   lines.push(`**模型**：${view.model ? `${view.model.provider}/${view.model.model}` : "(DSH 默认)"}`);
@@ -273,7 +276,7 @@ export function openedSessionCard({ view, style = "resumed", brief }) {
     if (excerpts.length) lines.push("", "—", ...excerpts);
   }
   return card({
-    title: style === "created" ? "✅ 会话已创建" : style === "entered" ? "✅ 已进入话题" : "🔄 会话已接入",
+    title: headerTitle,
     template: "green",
     elements: [md(lines.join("\n"))],
   });
