@@ -19,7 +19,13 @@ import {
   thinkingCard,
 } from "./cards.js";
 import { MAIN_ONLY, parseCommand } from "./commands.js";
-import { INTENT_SYSTEM, buildIntentPrompt, parseIntentDecision, resolveIntent } from "./console/intent.js";
+import {
+  INTENT_SYSTEM,
+  buildIntentPrompt,
+  fallbackIntent,
+  parseIntentDecision,
+  resolveIntent,
+} from "./console/intent.js";
 import { DshBridge } from "./dsh/controller.js";
 import { RunCards } from "./dsh/runs.js";
 import { FeishuApprovals } from "./dsh/approvals.js";
@@ -311,8 +317,9 @@ export class FeishuApp {
     }
 
     const started = Date.now();
+    let context;
     try {
-      const context = await this.intentContext();
+      context = await this.intentContext();
       const prompt = buildIntentPrompt({ text, ...context, history });
       const route =
         this.config.intentModel?.provider && this.config.intentModel?.model
@@ -408,11 +415,62 @@ export class FeishuApp {
       await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
       this.consolePending.delete(message.chatId);
     } catch (error) {
-      this.log.warn("主聊天意图识别失败，回退管理台", {
+      this.log.warn("主聊天意图识别失败，尝试确定性回退", {
         error: describeError(error),
         ms: Date.now() - started,
       });
-      await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+      const fallback = fallbackIntent(text, context ?? {
+        defaults: {
+          directory: this.config.defaultDirectory,
+          model: this.defaultModelSelection(),
+          perm: this.config.defaultPermissionPreset,
+        },
+        sessions: [],
+      });
+      try {
+        if (fallback.intent === "list") {
+          const views = await this.bridge.views();
+          await this.finishThinking(
+            ack.messageId,
+            message.chatId,
+            sessionListCard({ sessions: views, page: 0, pageSize: this.config.sessionPageSize }),
+          );
+        } else if (fallback.intent === "enter") {
+          const opened = await this.openSessionThread(
+            fallback.sessionId,
+            ack.messageId,
+            message.chatId,
+            message.senderOpenId,
+            "resumed",
+          );
+          await this.finishThinking(
+            ack.messageId,
+            message.chatId,
+            openedSessionCard({ view: opened.view, style: "entered" }),
+          );
+        } else if (fallback.intent === "create" && fallback.directory) {
+          const extras = await this.formExtras();
+          await this.finishThinking(
+            ack.messageId,
+            message.chatId,
+            newSessionFormCard({
+              values: {
+                title: fallback.title ?? "",
+                dir: fallback.directory,
+                model: fallback.model,
+                perm: fallback.perm,
+              },
+              ...extras,
+              roots: this.config.allowedRoots,
+            }),
+          );
+        } else {
+          await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+        }
+      } catch (fallbackError) {
+        this.log.warn("意图识别确定性回退失败", { error: describeError(fallbackError) });
+        await this.finishThinking(ack.messageId, message.chatId, mainHintCard({}));
+      }
       this.consolePending.delete(message.chatId);
     }
   }

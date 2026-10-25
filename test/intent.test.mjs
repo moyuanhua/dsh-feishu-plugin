@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildIntentPrompt, parseIntentDecision, resolveIntent } from "../src/console/intent.js";
+import { buildIntentPrompt, fallbackIntent, parseIntentDecision, resolveIntent } from "../src/console/intent.js";
 
 const context = {
   sessions: [
@@ -69,6 +69,16 @@ test("resolves enter by 1-based index, id prefix and title", () => {
   assert.equal(resolveIntent({ intent: "enter", target: "股票" }, context).sessionId, "session-bbb");
   const ambiguous = resolveIntent({ intent: "enter", target: "session" }, context);
   assert.equal(ambiguous.intent, "clarify");
+});
+
+test("deterministic fallback keeps create/list/enter usable without the model", () => {
+  const create = fallbackIntent("帮我修一下 dsh 飞书插件", context);
+  assert.equal(create.intent, "create");
+  assert.equal(create.directory, "/Users/code/wps");
+  assert.match(create.title, /飞书插件/);
+  assert.equal(fallbackIntent("有哪些会话", context).intent, "list");
+  assert.equal(fallbackIntent("你好", context).intent, "chat");
+  assert.equal(fallbackIntent("进入飞书插件修复", context).sessionId, "session-aaa");
 });
 
 test("unknown clarify question gets a usable default", () => {

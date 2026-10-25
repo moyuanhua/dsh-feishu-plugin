@@ -194,7 +194,7 @@ export class DshBridge {
   }
 
   /** One-shot text completion through DSH's LLM service (no session is created). */
-  async completeText({ system, prompt, route, maxTokens = 600, timeoutMs = 8_000 }) {
+  async completeText({ system, prompt, route, maxTokens = 2_000, timeoutMs = 8_000 }) {
     const llm = this.ctx.get?.("llm") ?? this.ctx.llm;
     if (!llm?.prepareCall) throw new Error("DSH llm 服务不可用");
     const selected = route ?? (await this.defaultModelRoute());
@@ -202,22 +202,63 @@ export class DshBridge {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
     try {
+      // Reasoning models can spend the whole output budget on thinking and
+      // return an empty text block; pick the least effort when the route exposes
+      // one, and keep enough output budget for the JSON answer.
+      let reasoningEffort;
+      try {
+        const info = await llm.resolveModelInfo?.(selected.provider, selected.model, controller.signal);
+        reasoningEffort = info?.reasoning?.efforts?.[0]?.id;
+      } catch {
+        /* capability lookup is optional */
+      }
       const call = await llm.prepareCall(
-        { provider: selected.provider, model: selected.model, maxTokens },
+        {
+          provider: selected.provider,
+          model: selected.model,
+          maxTokens,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
         controller.signal,
       );
       let text = "";
+      let reasoning = "";
+      let finish;
+      const chunkTypes = {};
       const stream = call.stream({
         ...call.config,
         maxTokens,
+        temperature: 0,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         system,
         messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
         signal: controller.signal,
       });
       for await (const chunk of stream) {
-        if (chunk?.type === "text-delta") text += chunk.text ?? "";
+        if (!chunk) continue;
+        chunkTypes[chunk.type] = (chunkTypes[chunk.type] ?? 0) + 1;
+        if (chunk.type === "text-delta") text += chunk.text ?? "";
+        else if (chunk.type === "reasoning-delta") reasoning += chunk.text ?? "";
+        else if (chunk.type === "finish") finish = chunk.reason;
       }
-      if (!text.trim()) throw new Error("模型返回为空");
+      this.log.debug("一次性模型调用结束", {
+        provider: selected.provider,
+        model: selected.model,
+        reasoningEffort,
+        textLen: text.length,
+        reasoningLen: reasoning.length,
+        chunkTypes,
+        finish,
+      });
+      if (!text.trim()) {
+        const detail =
+          finish && typeof finish === "object" && finish.error?.message
+            ? finish.error.message
+            : finish
+              ? JSON.stringify(finish)
+              : "no finish reason";
+        throw new Error(`模型返回为空（${detail}）`);
+      }
       return text;
     } finally {
       clearTimeout(timer);

@@ -212,6 +212,35 @@ function resolveEnter(decision, sessions) {
   return { question: `没有找到匹配「${truncate(target, 60)}」的会话。要新建一个，还是从 /sessions 列表里选？` };
 }
 
+/**
+ * Deterministic fallback used only when the model call fails. It keeps the
+ * common "help me do X" path usable: open a prefilled create form with the
+ * configured default directory instead of dropping the user at the console.
+ */
+export function fallbackIntent(text, context = {}) {
+  const value = str(text).trim();
+  if (!value) return { intent: "chat" };
+  if (/(有哪些|列出|所有|查看).{0,6}会话|会话.{0,4}列表/i.test(value)) return { intent: "list" };
+  if (/^(继续|进入|打开|切换|回到)/.test(value)) {
+    const target = value.replace(/^(继续|进入|打开|切换|回到)\s*/, "").replace(/(会话|话题)$/, "").trim();
+    const resolved = resolveIntent({ intent: "enter", target }, context);
+    return resolved?.intent === "enter" ? resolved : { intent: "chat" };
+  }
+  if (/^(你好|您好|hi|hello|在吗|谢谢|多谢)/i.test(value) && value.length < 12) {
+    return { intent: "chat" };
+  }
+  const directory = context.defaults?.directory;
+  if (!directory) return { intent: "chat" };
+  return {
+    intent: "create",
+    directory,
+    dirSource: "default",
+    title: truncate(value.replace(/\s+/g, " "), 30),
+    ...(context.defaults?.model ? { model: context.defaults.model } : {}),
+    ...(context.defaults?.perm ? { perm: context.defaults.perm } : {}),
+  };
+}
+
 export function resolveIntent(decision, context) {
   if (!decision) return undefined;
   if (decision.intent === "list") return { intent: "list" };
