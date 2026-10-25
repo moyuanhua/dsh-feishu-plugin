@@ -14,14 +14,22 @@ export class FeishuApprovals {
     this.isAllowed = isAllowed;
     this.signer = createSigner(config.signSecret);
     this.pending = new Map();
-    this.dispose = ctx.on("approval/request", async (req, next) => {
-      try {
-        return await this.handleRequest(req, next);
-      } catch (error) {
-        this.log.warn("审批卡片处理失败", { error: describeError(error) });
-        return next();
-      }
-    });
+    // Prepend: the Web UI approval answerer is also registered on this
+    // waterfall. Without priority it can claim the request first, so a
+    // Feishu-bound session shows an approval card in the Web UI but never in
+    // Feishu. We claim linked sessions and delegate everything else.
+    this.dispose = ctx.on(
+      "approval/request",
+      async (req, next) => {
+        try {
+          return await this.handleRequest(req, next);
+        } catch (error) {
+          this.log.warn("审批卡片处理失败", { error: describeError(error) });
+          return next();
+        }
+      },
+      { prepend: true },
+    );
   }
 
   close() {

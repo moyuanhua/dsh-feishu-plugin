@@ -14,14 +14,20 @@ export class FeishuQuestions {
     this.isAllowed = isAllowed;
     this.signer = createSigner(config.signSecret);
     this.pending = new Map();
-    this.dispose = ctx.on("user-questions/request", async (request, next) => {
-      try {
-        return await this.handleRequest(request, next);
-      } catch (error) {
-        this.log.warn("提问卡片处理失败", { error: describeError(error) });
-        return next();
-      }
-    });
+    // Same precedence problem as approvals: claim Feishu-bound sessions
+    // before the Web UI answerer, delegate everything else.
+    this.dispose = ctx.on(
+      "user-questions/request",
+      async (request, next) => {
+        try {
+          return await this.handleRequest(request, next);
+        } catch (error) {
+          this.log.warn("提问卡片处理失败", { error: describeError(error) });
+          return next();
+        }
+      },
+      { prepend: true },
+    );
   }
 
   close() {
