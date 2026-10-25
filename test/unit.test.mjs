@@ -173,7 +173,7 @@ test("sessionBrief extracts title, summary, last user and assistant text", async
   assert.equal(brief.lastAssistant, "latest answer");
 });
 
-test("runCard always shows only the newest tool and folds the rest", () => {
+test("runCard folds every tool into one drawer and shows the total count", () => {
   const tools = Array.from({ length: 5 }, (_, index) => ({
     callId: `c${index}`,
     name: "bash",
@@ -186,14 +186,26 @@ test("runCard always shows only the newest tool and folds the rest", () => {
   });
   const json = JSON.stringify(live);
   assert.match(json, /collapsible_panel/);
-  assert.match(json, /4 个工具调用/);
+  assert.match(json, /5 次工具调用（进行中）/);
   assert.match(json, /✅ \*\*bash\*\* — echo 4/);
   const done = runCard({
     run: { sessionId: "s", status: "done", startedAt: Date.now(), tools, toolTotal: 5, text: "ok" },
     maxAnswerChars: 4_000,
   });
-  assert.match(JSON.stringify(done), /4 个工具调用（已结束）/);
+  assert.match(JSON.stringify(done), /5 次工具调用/);
   assert.match(JSON.stringify(done), /✅ \*\*bash\*\* — echo 4/);
+});
+
+test("runCard always reserves thinking and tool drawers, even when empty", () => {
+  const card = runCard({
+    run: { sessionId: "s", status: "running", startedAt: Date.now(), tools: [], toolTotal: 0, streamingText: "" },
+    maxAnswerChars: 4_000,
+  });
+  const json = JSON.stringify(card);
+  assert.match(json, /思考过程（思考中…）/);
+  assert.match(json, /工具调用（暂无）/);
+  assert.match(json, /暂无思考内容/);
+  assert.match(json, /暂无工具调用/);
 });
 
 test("runCard keeps a fixed skeleton with a collapsed thinking panel", () => {

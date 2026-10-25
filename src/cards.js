@@ -423,34 +423,8 @@ function toolHeader(tool) {
   return preview ? `${icon} **${truncate(tool.name, 40)}** — ${preview}` : `${icon} **${truncate(tool.name, 40)}**`;
 }
 
-function toolPanel(tool, expanded) {
-  const body = tool.preview ? `**输入**\n${truncate(tool.preview, 400)}` : "_无参数_";
-  return collapsiblePanel({
-    title: toolHeader(tool),
-    expanded,
-    border: tool.status === "error" ? "red" : "grey",
-    body: tool.status === "running" ? `${body}\n\n_运行中…_` : body,
-  });
-}
-
-function collapsedTools(tools, finalized) {
-  return collapsiblePanel({
-    title: `🔧 **${tools.length} 个工具调用${finalized ? "（已结束）" : ""}**`,
-    expanded: false,
-    border: "blue",
-    body: tools.map((tool) => `- ${toolHeader(tool)}`).join("\n"),
-  });
-}
-
-function toolElements(run) {
-  const tools = run.tools ?? [];
-  if (tools.length === 0) return [];
-  // Always surface only the newest tool; everything before it stays folded.
-  const latest = tools[tools.length - 1];
-  const prior = tools.slice(0, -1);
-  const finalized = run.status !== "starting" && run.status !== "running";
-  if (prior.length === 0) return [toolPanel(latest, true)];
-  return [collapsedTools(prior, finalized), toolPanel(latest, true)];
+function toolLine(tool) {
+  return `- ${toolHeader(tool)}`;
 }
 
 export function runCard({ run, maxAnswerChars }) {
@@ -494,23 +468,39 @@ export function runCard({ run, maxAnswerChars }) {
   const elements = [];
   elements.push(md(`${meta.join(" · ")}\n${statusLine}`));
 
-  if (reasoning) {
-    elements.push(
-      collapsiblePanel({
-        title: `💭 思考过程${status === "done" || status === "error" || status === "stopped" ? "" : "（进行中）"}`,
-        expanded: false,
-        border: "grey",
-        body: truncate(reasoning, 1_500),
-      }),
-    );
-  }
+  const active = status === "starting" || status === "running";
+  const totalTools = run.toolTotal ?? run.tools.length;
+  const thinkingTitle = active
+    ? "💭 思考过程（思考中…）"
+    : reasoning
+      ? "💭 思考过程"
+      : "💭 思考过程（暂无）";
+  elements.push(
+    collapsiblePanel({
+      title: thinkingTitle,
+      expanded: false,
+      border: "grey",
+      body: reasoning ? truncate(reasoning, 1_500) : "_暂无思考内容_",
+    }),
+  );
 
-  if (run.tools.length) {
-    elements.push(...toolElements(run));
-    if ((run.toolTotal ?? run.tools.length) > run.tools.length) {
-      elements.push(note(`…已省略前 ${run.toolTotal - run.tools.length} 次工具调用`));
-    }
-  }
+  const toolTitle = totalTools
+    ? `🔧 ${totalTools} 次工具调用${active ? "（进行中）" : ""}`
+    : "🔧 工具调用（暂无）";
+  const toolBody = run.tools.length
+    ? [
+        ...run.tools.map((tool) => toolLine(tool)),
+        ...(totalTools > run.tools.length ? [`- …已省略前 ${totalTools - run.tools.length} 次`] : []),
+      ].join("\n")
+    : "_暂无工具调用_";
+  elements.push(
+    collapsiblePanel({
+      title: toolTitle,
+      expanded: false,
+      border: "blue",
+      body: toolBody,
+    }),
+  );
 
   if (answer) {
     elements.push(hr());
