@@ -7,6 +7,7 @@ import { parseCommand } from "../src/commands.js";
 import { createSigner } from "../src/security.js";
 import { StateStore } from "../src/state.js";
 import { DshBridge } from "../src/dsh/controller.js";
+import { FeishuQuestions } from "../src/dsh/questions.js";
 import { isUnder, validateDirectory } from "../src/utils.js";
 import {
   approvalCard,
@@ -252,7 +253,7 @@ test("every card builder produces serializable JSON 2.0", () => {
     modelCard({ sid: "s1", current: { provider: "p", model: "m" }, models: [{ provider: "p", providerName: "P", model: "m", name: "M" }] }),
     permissionCard({ sid: "s1", current: "workspace-write", perms: [{ value: "workspace-write", name: "Workspace write" }] }),
     approvalCard({ toolName: "bash", reason: "needs write", approveToken: "a", rejectToken: "r" }),
-    questionCard({ token: "t", questions: [{ id: "q1", question: "Proceed?", options: [{ label: "Yes" }] }] }),
+    questionCard({ token: "t", question: { id: "q1", question: "Proceed?", options: [{ label: "Yes" }] }, index: 0, total: 2 }),
     runCard({
       run: {
         sessionId: "s1",
@@ -274,4 +275,108 @@ test("every card builder produces serializable JSON 2.0", () => {
   const form = cards[3].body.elements.find((element) => element.tag === "form");
   assert.equal(form.tag, "form");
   assert.ok(form.elements.some((element) => element.name === "submit" && element.form_action_type === "submit"));
+});
+
+
+test("question cards use a Feishu form with select, multi-select and text input", () => {
+  const single = questionCard({
+    token: "t",
+    question: { id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] },
+    index: 0,
+    total: 2,
+  });
+  const singleForm = single.body.elements.find((element) => element.tag === "form");
+  assert.ok(singleForm);
+  assert.equal(singleForm.elements.find((element) => element.name === "choice").tag, "select_static");
+  assert.equal(singleForm.elements.find((element) => element.name === "custom").tag, "input");
+  assert.equal(singleForm.elements.find((element) => element.name === "submit").form_action_type, "submit");
+
+  const multi = questionCard({
+    token: "t",
+    question: { id: "q2", question: "Pick many", multiSelect: true, options: [{ label: "A" }, { label: "B" }] },
+    index: 1,
+    total: 2,
+  });
+  const multiForm = multi.body.elements.find((element) => element.tag === "form");
+  assert.equal(multiForm.elements.find((element) => element.name === "choice").tag, "multi_select_static");
+});
+
+function questionHarness() {
+  const patches = [];
+  const replies = [];
+  const sender = {
+    async replyCard(_anchor, card) {
+      return { ok: true, messageId: "om_question" };
+    },
+    async replyText(anchor, text) {
+      replies.push({ anchor, text });
+      return { ok: true, messageId: "om_text" };
+    },
+    async patchCard(messageId, card) {
+      patches.push({ messageId, card });
+      return { ok: true };
+    },
+  };
+  const config = { signSecret: "test-secret", questionTtlMs: 60_000 };
+  const questions = new FeishuQuestions({
+    ctx: { on: () => () => {} },
+    bridge: {},
+    sender,
+    state: { linkForSession: () => ({ anchorMessageId: "om_anchor" }) },
+    config,
+    log: { debug() {}, info() {}, warn() {} },
+    isAllowed: () => true,
+  });
+  return { questions, patches, replies };
+}
+
+test("plain text replies answer the current question and advance sequentially", async () => {
+  const { questions } = questionHarness();
+  const pending = questions.handleRequest(
+    {
+      agent: { id: "session-test" },
+      questions: [
+        { id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] },
+        { id: "q2", question: "Pick many", multiSelect: true, options: [{ label: "C" }, { label: "D" }] },
+      ],
+    },
+    () => Promise.reject(new Error("should not delegate")),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(await questions.tryAnswerText("session-test", "A"), true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(await questions.tryAnswerText("session-test", "C、D"), true);
+  const result = await pending;
+  assert.deepEqual(result.answers, [
+    { id: "q1", selected: ["A"] },
+    { id: "q2", selected: ["C", "D"] },
+  ]);
+  questions.close();
+});
+
+test("form submit carries multi-select values plus custom text", async () => {
+  const { questions, patches } = questionHarness();
+  const pending = questions.handleRequest(
+    {
+      agent: { id: "session-form" },
+      questions: [
+        { id: "q1", question: "Pick many", multiSelect: true, options: [{ label: "Red" }, { label: "Blue" }] },
+      ],
+    },
+    () => Promise.reject(new Error("should not delegate")),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const item = [...questions.pending.values()][0];
+  const token = questions.signer.sign({ kind: "question", key: item.key });
+  const action = await questions.handleAction({
+    value: { a: "qsubmit", t: token, i: 0 },
+    formValue: { choice: ["Red", "Blue"], custom: "plus note" },
+    operatorOpenId: "ou_test",
+  });
+  assert.equal(action.toast.type, "success");
+  const result = await pending;
+  assert.deepEqual(result.answers, [{ id: "q1", selected: ["Red", "Blue"], custom: "plus note" }]);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.ok(patches.length >= 1);
+  questions.close();
 });

@@ -79,7 +79,7 @@ export function helpCard() {
           "",
           "**审批与提问**",
           "DSH 的审批请求会变成飞书卡片：只支持「允许一次 / 拒绝」（DSH 的审批是一次性授权）。",
-          "模型反问会变成选项卡片，也可以直接在话题里回复文字。",
+          "模型反问会变成表单卡：单选、多选、文字输入；多个问题逐题展示，也可以直接在话题里回复文字。",
         ].join("\n"),
       ),
       note("全程 WebSocket 长连接：不监听端口，也不需要公网地址。"),
@@ -356,35 +356,87 @@ export function approvalResultCard({ approved, toolName }) {
   });
 }
 
-export function questionCard({ questions, token }) {
+export function questionCard({ question, index = 0, total = 1, token }) {
   const elements = [];
-  questions.forEach((question, index) => {
-    const head = question.header ? `**${question.header}**\n` : "";
-    elements.push(md(`${head}${question.question}`));
-    if (question.detail) elements.push(md(truncate(question.detail, 4_000)));
-    if (Array.isArray(question.options) && question.options.length > 0) {
-      if (question.multiSelect) {
-        elements.push(md(question.options.map((option) => `- ${option.label}`).join("\n")));
-        elements.push(note("这是多选题：直接回复选项标签（可用逗号分隔），或回复其它文字作为自定义答案。"));
-      } else {
-        for (const option of question.options.slice(0, 10)) {
-          elements.push(
-            button(option.label, "default", {
-              a: "answer",
-              t: token,
-              q: question.id,
-              s: option.label,
-            }),
-          );
-        }
-        elements.push(note("也可以直接在话题里回复文字作答（会作为自定义答案）。"));
-      }
+  const head = question.header ? `**${question.header}**\n` : "";
+  elements.push(md(`${head}${question.question}`));
+  if (question.detail) elements.push(md(truncate(question.detail, 4_000)));
+
+  const options = Array.isArray(question.options)
+    ? question.options.filter((option) => option && option.label).slice(0, 50)
+    : [];
+  const fields = [];
+
+  if (options.length > 0) {
+    const choiceOptions = options.map((option) => ({
+      text: { tag: "plain_text", content: truncate(option.label, 100) },
+      value: truncate(option.label, 100),
+    }));
+    if (question.multiSelect) {
+      fields.push({
+        tag: "multi_select_static",
+        name: "choice",
+        type: "default",
+        width: "fill",
+        required: false,
+        placeholder: { tag: "plain_text", content: "可多选（选完点提交）" },
+        options: choiceOptions,
+      });
     } else {
-      elements.push(note("直接在话题里回复文字作答。"));
+      fields.push({
+        tag: "select_static",
+        name: "choice",
+        type: "default",
+        width: "fill",
+        required: false,
+        placeholder: { tag: "plain_text", content: "请选择" },
+        options: choiceOptions,
+      });
     }
-    if (index < questions.length - 1) elements.push(hr());
+    if (options.length < (question.options?.length ?? 0)) {
+      elements.push(note(`选项较多，仅展示前 ${options.length} 个；其余请直接回复文字。`));
+    }
+  }
+
+  fields.push({
+    tag: "input",
+    name: "custom",
+    width: "fill",
+    required: false,
+    placeholder: {
+      tag: "plain_text",
+      content: options.length > 0 ? "其它答案（可选）" : "输入你的回答",
+    },
   });
-  return card({ title: "❓ 需要你的决定", template: "orange", elements });
+  fields.push({
+    tag: "button",
+    name: "submit",
+    type: "primary",
+    form_action_type: "submit",
+    text: { tag: "plain_text", content: "✅ 提交" },
+    behaviors: [{ type: "callback", value: { a: "qsubmit", t: token, i: index } }],
+  });
+
+  elements.push({
+    tag: "form",
+    name: "q_form",
+    elements: fields,
+  });
+  elements.push(
+    note(
+      options.length > 0
+        ? question.multiSelect
+          ? "可多选；选完点「提交」。也可以直接在本话题回复选项，多个用逗号分隔。"
+          : "选择后点「提交」；也可以直接在本话题回复选项或文字。"
+        : "在输入框填写后点「提交」；也可以直接在本话题回复文字。",
+    ),
+  );
+
+  return card({
+    title: `❓ 需要你的决定 (${index + 1}/${total})`,
+    template: "orange",
+    elements,
+  });
 }
 
 export function questionAnsweredCard({ summary }) {

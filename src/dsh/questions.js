@@ -1,7 +1,55 @@
-/** Answers DSH user-questions waterfalls through Feishu cards or plain replies. */
+/** Answers DSH user-questions waterfalls through Feishu forms or plain replies. */
 import { createSigner } from "../security.js";
 import { describeError, truncate, uniqueId } from "../utils.js";
 import { questionAnsweredCard, questionCard } from "../cards.js";
+
+function textOf(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function labelsOf(question) {
+  return Array.isArray(question?.options)
+    ? question.options.map((option) => textOf(option?.label)).filter(Boolean)
+    : [];
+}
+
+function matchChoice(question, raw) {
+  const token = textOf(raw).replace(/^[-*•\s]+/, "");
+  if (!token) return undefined;
+  const labels = labelsOf(question);
+  const numeric = /^\d+$/.test(token) ? Number.parseInt(token, 10) : undefined;
+  if (numeric && numeric >= 1 && numeric <= labels.length) return labels[numeric - 1];
+  const lower = token.toLowerCase();
+  return labels.find((label) => label.toLowerCase() === lower);
+}
+
+function summaryText(questions, answers) {
+  if (!answers.length) return "已跳过/超时。";
+  return answers
+    .map((entry) => {
+      const question = questions.find((item) => item.id === entry.id);
+      const selected = entry.selected?.filter(Boolean) ?? [];
+      const custom = textOf(entry.custom);
+      const text = [selected.join("、"), custom ? `其它：${custom}` : ""].filter(Boolean).join("；") || "(跳过)";
+      return `- ${question?.question ?? entry.id}: **${truncate(text, 300)}**`;
+    })
+    .join("\n");
+}
+
+function questionText(question, index, total) {
+  const lines = [`❓ 需要你的决定（${index + 1}/${total}）`];
+  if (question?.header) lines.push(`**${question.header}**`);
+  lines.push(question?.question ?? "");
+  if (question?.detail) lines.push("", truncate(question.detail, 1_000));
+  const labels = labelsOf(question);
+  if (labels.length) {
+    lines.push("", question.multiSelect ? "可多选，回复选项（多个用逗号分隔）：" : "请回复选项：");
+    labels.forEach((label, i) => lines.push(`${i + 1}. ${label}`));
+  } else {
+    lines.push("", "直接回复文字作答。");
+  }
+  return lines.join("\n");
+}
 
 export class FeishuQuestions {
   constructor({ ctx, bridge, sender, state, config, log, isAllowed }) {
@@ -49,30 +97,44 @@ export class FeishuQuestions {
     const link = this.state.linkForSession(sessionId);
     if (!link?.anchorMessageId) return next();
 
-    const questions = Array.isArray(request.questions) ? request.questions : [];
+    const questions = Array.isArray(request.questions) ? request.questions.filter((q) => q?.id) : [];
     if (questions.length === 0) return next();
 
     const key = uniqueId("q_");
     const token = this.signer.sign({ kind: "question", key });
-    const card = questionCard({ questions, token });
-    const sent = await this.sender.replyCard(link.anchorMessageId, card);
-    if (!sent.ok) return next();
+    const item = {
+      key,
+      sessionId,
+      questions,
+      answers: new Map(),
+      index: 0,
+      messageId: undefined,
+      isCard: false,
+      anchorMessageId: link.anchorMessageId,
+      resolve: undefined,
+      timer: undefined,
+      signal: request.signal,
+      onAbort: undefined,
+      settled: false,
+    };
 
+    const card = questionCard({ question: questions[0], index: 0, total: questions.length, token });
+    const sent = await this.sender.replyCard(link.anchorMessageId, card);
+    if (sent.ok) {
+      item.messageId = sent.messageId;
+      item.isCard = true;
+    } else {
+      // A malformed/oversized card must not leave the question unanswered. Fall
+      // back to a text prompt; the same pending item still accepts text replies.
+      this.log.warn("提问卡片发送失败，回退为文字提问", { sessionId, error: sent.error });
+      const fallback = await this.sender.replyText(link.anchorMessageId, questionText(questions[0], 0, questions.length));
+      if (!fallback.ok) return next();
+      item.messageId = fallback.messageId;
+    }
+
+    this.pending.set(key, item);
     const answer = await new Promise((resolve) => {
-      const item = {
-        key,
-        sessionId,
-        questions,
-        answers: new Map(),
-        messageId: sent.messageId,
-        anchorMessageId: link.anchorMessageId,
-        resolve,
-        timer: undefined,
-        signal: request.signal,
-        onAbort: undefined,
-        settled: false,
-      };
-      this.pending.set(key, item);
+      item.resolve = resolve;
       item.timer = setTimeout(() => {
         this.settle(key, [], "⏰ 问题超时，按跳过回答").catch(() => undefined);
       }, this.config.questionTtlMs);
@@ -87,7 +149,27 @@ export class FeishuQuestions {
     return { answers: answer };
   }
 
-  async settle(key, answers, note, patch = true) {
+  answersInOrder(item) {
+    return item.questions.map((q) => item.answers.get(q.id)).filter(Boolean);
+  }
+
+  patchSoon(item, card, fallback = false) {
+    if (!item.messageId) return;
+    const timer = setTimeout(() => {
+      this.sender.patchCard(item.messageId, card).then(async (res) => {
+        if (res.ok) return;
+        this.log.debug("提问卡片更新失败", { error: res.error });
+        // The card can be locked while its callback is still settling. Send a
+        // fresh card rather than leaving the user stuck on the old question.
+        if (!fallback) return;
+        const fresh = await this.sender.replyCard(item.anchorMessageId, card);
+        if (fresh.ok) item.messageId = fresh.messageId;
+      });
+    }, 350);
+    timer.unref?.();
+  }
+
+  async settle(key, answers, note) {
     const item = this.pending.get(key);
     if (!item || item.settled) return false;
     item.settled = true;
@@ -95,21 +177,74 @@ export class FeishuQuestions {
     clearTimeout(item.timer);
     if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
     item.resolve?.(answers);
-    const summary = answers.length
-      ? answers
-          .map((entry) => {
-            const question = item.questions.find((q) => q.id === entry.id);
-            const text = entry.selected?.length ? entry.selected.join(", ") : entry.custom ?? "(跳过)";
-            return `- ${question?.question ?? entry.id}: **${truncate(text, 300)}**`;
-          })
-          .join("\n")
-      : "已跳过/超时。";
-    if (patch) await this.sender.patchCard(item.messageId, questionAnsweredCard({ summary }));
+    const summary = summaryText(item.questions, answers);
+    if (item.isCard) {
+      this.patchSoon(item, questionAnsweredCard({ summary }));
+    } else if (item.messageId) {
+      void this.sender.replyText(item.anchorMessageId, summary);
+    }
     if (note) this.log.info("提问结束", { sessionId: item.sessionId, note });
-    return summary;
+    return true;
   }
 
-  /** Resolve a question with one selected option label. */
+  /** Record one answer and either show the next question or settle. */
+  async recordAnswer(item, answer) {
+    const question = item.questions[item.index];
+    item.answers.set(question.id, answer);
+    const next = item.index + 1;
+    if (next < item.questions.length) {
+      item.index = next;
+      const nextQuestion = item.questions[next];
+      if (item.isCard) {
+        const token = this.signer.sign({ kind: "question", key: item.key });
+        this.patchSoon(
+          item,
+          questionCard({ question: nextQuestion, index: next, total: item.questions.length, token }),
+          true,
+        );
+      } else {
+        void this.sender.replyText(
+          item.anchorMessageId,
+          questionText(nextQuestion, next, item.questions.length),
+        );
+      }
+      return { done: false, remaining: item.questions.length - next };
+    }
+    await this.settle(item.key, this.answersInOrder(item));
+    return { done: true, remaining: 0 };
+  }
+
+  async handleSubmit(action, value) {
+    const payload = this.signer.verify(value.t);
+    if (!payload || payload.kind !== "question") {
+      return { toast: { type: "error", content: "凭证无效或已过期" } };
+    }
+    const item = this.pending.get(payload.key);
+    if (!item) return { toast: { type: "error", content: "问题已回答或已过期" } };
+    if (Number(value.i) !== item.index) {
+      return { toast: { type: "error", content: "请回答当前显示的问题" } };
+    }
+    const question = item.questions[item.index];
+    const form = action.formValue && typeof action.formValue === "object" ? action.formValue : {};
+    const raw = form.choice;
+    const rawChoice = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+    const known = new Set(labelsOf(question));
+    const selected = rawChoice.map(String).map((entry) => entry.trim()).filter((entry) => known.has(entry));
+    const custom = textOf(form.custom);
+    if (selected.length === 0 && !custom) {
+      return { toast: { type: "error", content: "请选择一个选项，或填写文字答案" } };
+    }
+    const answer = { id: question.id, selected, ...(custom ? { custom } : {}) };
+    const result = await this.recordAnswer(item, answer);
+    return {
+      toast: {
+        type: "success",
+        content: result.done ? "已提交" : `已记录，还剩 ${result.remaining} 个问题`,
+      },
+    };
+  }
+
+  /** Resolve a question with one selected option label (legacy button cards). */
   async handleAction(action) {
     const value = action.value ?? {};
     const payload = this.signer.verify(value.t);
@@ -119,53 +254,63 @@ export class FeishuQuestions {
     if (!this.isAllowed(action.operatorOpenId)) {
       return { toast: { type: "error", content: "你不在允许名单内" } };
     }
+    if (value.a === "qsubmit") return this.handleSubmit(action, value);
+
     const item = this.pending.get(payload.key);
     if (!item) return { toast: { type: "error", content: "问题已回答或已过期" } };
-
     const questionId = String(value.q ?? "");
-    const selected = String(value.s ?? "");
-    const question = item.questions.find((entry) => entry.id === questionId);
-    if (!question) return { toast: { type: "error", content: "未知问题" } };
-
-    const answers = [{ id: questionId, selected: [selected] }];
-    const remaining = item.questions.filter((entry) => entry.id !== questionId && !item.answers.has(entry.id));
-    if (remaining.length > 0) {
-      item.answers.set(questionId, answers[0]);
-      return { toast: { type: "info", content: "已记录，请继续回答其他问题" } };
+    const questionIndex = item.questions.findIndex((entry) => entry.id === questionId);
+    if (questionIndex < 0 || questionIndex !== item.index) {
+      return { toast: { type: "error", content: "请回答当前显示的问题" } };
     }
-    for (const [id, answer] of item.answers) if (id !== questionId) answers.push(answer);
-    const summary = answers
-      .map((entry) => {
-        const question = item.questions.find((q) => q.id === entry.id);
-        const text = entry.selected?.length ? entry.selected.join(", ") : entry.custom ?? "(跳过)";
-        return `- ${question?.question ?? entry.id}: **${truncate(text, 300)}**`;
-      })
-      .join("\n");
-    await this.settle(payload.key, answers, undefined, false);
-    const card = questionAnsweredCard({ summary });
-    return { card: { type: "raw", data: card }, toast: { type: "info", content: "已回答" } };
+    const selected = textOf(value.s);
+    if (!selected) return { toast: { type: "error", content: "缺少选项" } };
+    const result = await this.recordAnswer(item, { id: questionId, selected: [selected] });
+    return {
+      toast: {
+        type: "success",
+        content: result.done ? "已回答" : `已记录，还剩 ${result.remaining} 个问题`,
+      },
+    };
+  }
+
+  textAnswer(question, text) {
+    const trimmed = textOf(text);
+    if (!trimmed) return undefined;
+    const labels = labelsOf(question);
+    if (question.multiSelect && labels.length) {
+      const parts = trimmed.split(/[、,，;；\n]+/).map((part) => part.trim()).filter(Boolean);
+      const selected = [];
+      const leftover = [];
+      for (const part of parts) {
+        const matched = matchChoice(question, part);
+        if (matched) selected.push(matched);
+        else leftover.push(part);
+      }
+      if (selected.length) {
+        return { id: question.id, selected, ...(leftover.length ? { custom: leftover.join(" ") } : {}) };
+      }
+      return { id: question.id, selected: [], custom: trimmed };
+    }
+    const matched = labels.length ? matchChoice(question, trimmed) : undefined;
+    return matched
+      ? { id: question.id, selected: [matched] }
+      : { id: question.id, selected: [], custom: trimmed };
   }
 
   /**
-   * Consume a plain reply in the topic as the answer. Returns true when the
-   * text was used (and must not also be sent to the model).
+   * Consume a plain reply in the topic as the answer to the current question.
+   * Returns true when the text was used (and must not also be sent to the model).
    */
   async tryAnswerText(sessionId, text) {
-    const trimmed = String(text ?? "").trim();
+    const trimmed = textOf(text);
     if (!trimmed) return false;
     const item = [...this.pending.values()].find((entry) => entry.sessionId === sessionId && !entry.settled);
     if (!item) return false;
-    if (item.questions.length > 1) {
-      await this.sender.replyText(item.anchorMessageId, "这是一组问题：请点卡片上的选项；如需自由作答，请逐个问题用按钮选择。");
-      return true;
-    }
-    const question = item.questions[0];
-    const labels = (question.options ?? []).map((option) => option.label);
-    const matched = labels.find((label) => label === trimmed);
-    const answer = matched
-      ? { id: question.id, selected: [matched] }
-      : { id: question.id, selected: [], custom: trimmed };
-    await this.settle(item.key, [answer]);
+    const question = item.questions[item.index];
+    const answer = this.textAnswer(question, trimmed);
+    if (!answer) return false;
+    await this.recordAnswer(item, answer);
     return true;
   }
 }

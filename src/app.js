@@ -1134,7 +1134,7 @@ export class FeishuApp {
     const kind = str(value.a);
 
     if (kind === "approve" || kind === "reject") return this.approvals.handleAction(action);
-    if (kind === "answer") return this.questions.handleAction(action);
+    if (kind === "answer" || kind === "qsubmit") return this.questions.handleAction(action);
 
     if (kind === "stop") {
       const sessionId = str(value.s);
