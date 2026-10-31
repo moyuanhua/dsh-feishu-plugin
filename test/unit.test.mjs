@@ -288,9 +288,17 @@ test("question cards use buttons for single, multi-select and text prompts", () 
   });
   const singleButtons = single.body.elements.filter((element) => element.tag === "button");
   assert.ok(singleButtons.some((element) => element.behaviors?.[0]?.value?.a === "qpick"));
-  const form = single.body.elements.find((element) => element.tag === "form");
-  assert.equal(form.elements.find((element) => element.name === "custom").tag, "input");
-  assert.equal(form.elements.find((element) => element.name === "submit").behaviors?.[0]?.value?.a, "qtextsubmit");
+  assert.equal(single.body.elements.find((element) => element.tag === "form"), undefined);
+
+  const textOnly = questionCard({
+    token: "t",
+    question: { id: "q3", question: "Any note?" },
+    index: 0,
+    total: 1,
+  });
+  const textForm = textOnly.body.elements.find((element) => element.tag === "form");
+  assert.equal(textForm.elements.find((element) => element.name === "custom").tag, "input");
+  assert.equal(textForm.elements.find((element) => element.name === "submit").behaviors?.[0]?.value?.a, "qtextsubmit");
 
   const multi = questionCard({
     token: "t",
@@ -364,7 +372,7 @@ test("form input submits a custom text answer", async () => {
   const pending = questions.handleRequest(
     {
       agent: { id: "session-text" },
-      questions: [{ id: "q1", question: "Any note?", options: [{ label: "A" }, { label: "B" }] }],
+      questions: [{ id: "q1", question: "Any note?" }],
     },
     () => Promise.reject(new Error("should not delegate")),
   );
