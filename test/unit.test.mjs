@@ -423,6 +423,26 @@ test("multi-select toggles buttons and submits the selected labels", async () =>
   questions.close();
 });
 
+test("long card content is truncated below the Feishu 30KB limit", () => {
+  const huge = "长".repeat(20_000);
+  const card = runCard({
+    run: {
+      sessionId: "s1",
+      status: "done",
+      startedAt: Date.now(),
+      tools: [],
+      text: huge,
+      streamingText: huge,
+      streamingReasoning: huge,
+      canStop: false,
+    },
+    maxAnswerChars: 20_000,
+  });
+  const bytes = Buffer.byteLength(JSON.stringify(card), "utf8");
+  assert.ok(bytes <= 29_000, `card is ${bytes} bytes`);
+  assert.match(JSON.stringify(card), /卡片已截断/);
+});
+
 test("run cards rotate to a fresh card after a question is answered", async () => {
   const sent = [];
   const patches = [];

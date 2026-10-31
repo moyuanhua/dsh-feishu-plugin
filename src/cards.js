@@ -1,13 +1,61 @@
 /** Feishu interactive-card builders (JSON 2.0). Pure functions only. */
 import { formatDuration, relativeTime, truncate, truncateMiddle } from "./utils.js";
 
+const MAX_CARD_BYTES = 29_000;
+const TRUNCATED_MARK = "\n\n…（内容过长，卡片已截断）";
+
+function utf8Bytes(text) {
+  return Buffer.byteLength(String(text), "utf8");
+}
+
+function truncateUtf8(text, maxBytes) {
+  let out = "";
+  let used = 0;
+  for (const char of String(text)) {
+    const size = utf8Bytes(char);
+    if (used + size > maxBytes) break;
+    out += char;
+    used += size;
+  }
+  return out;
+}
+
+function textNodes(elements, out = []) {
+  for (const element of Array.isArray(elements) ? elements : []) {
+    if (!element || typeof element !== "object") continue;
+    if (element.tag === "markdown" && typeof element.content === "string") out.push(element);
+    if (Array.isArray(element.elements)) textNodes(element.elements, out);
+    if (Array.isArray(element.columns)) {
+      for (const column of element.columns) textNodes(column?.elements, out);
+    }
+  }
+  return out;
+}
+
+/** Feishu rejects cards over 30KB; truncate the largest text blocks before send. */
+function fitCard(value) {
+  let bytes = utf8Bytes(JSON.stringify(value));
+  if (bytes <= MAX_CARD_BYTES) return value;
+  const nodes = textNodes(value.body?.elements ?? []).sort(
+    (a, b) => utf8Bytes(b.content) - utf8Bytes(a.content),
+  );
+  for (const node of nodes) {
+    if (bytes <= MAX_CARD_BYTES) break;
+    const excess = bytes - MAX_CARD_BYTES;
+    const target = Math.max(64, utf8Bytes(node.content) - excess - 64);
+    node.content = `${truncateUtf8(node.content, target)}${TRUNCATED_MARK}`;
+    bytes = utf8Bytes(JSON.stringify(value));
+  }
+  return value;
+}
+
 function card({ title, template = "blue", elements = [] }) {
-  return {
+  return fitCard({
     schema: "2.0",
     config: { update_multi: true },
     header: { title: { tag: "plain_text", content: truncate(title, 80) }, template },
     body: { elements: elements.slice(0, 190) },
-  };
+  });
 }
 
 function md(content) {
