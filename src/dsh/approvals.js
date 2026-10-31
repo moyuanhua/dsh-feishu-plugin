@@ -81,7 +81,7 @@ export class FeishuApprovals {
         settled: false,
       };
       this.pending.set(key, item);
-      item.timer = setTimeout(() => this.settle(key, "cancelled", "⏰ 审批超时"), this.config.approvalTtlMs);
+      item.timer = setTimeout(() => this.markExpired(key).catch(() => undefined), this.config.approvalTtlMs);
       item.timer.unref?.();
       if (req.signal) {
         item.onAbort = () => this.settle(key, "cancelled", "已取消");
@@ -92,6 +92,30 @@ export class FeishuApprovals {
 
     this.log.info("审批已结算", { sessionId, tool: req.toolName, outcome });
     return outcome;
+  }
+
+  /** Keep a timed-out approval actionable for a grace period instead of
+   * deleting it; a late click can still resolve the waiting DSH request. */
+  async markExpired(key) {
+    const item = this.pending.get(key);
+    if (!item || item.settled || item.expired) return;
+    item.expired = true;
+    const token = this.signer.sign({ kind: "approval", key: item.key });
+    await this.sender.patchCard(
+      item.messageId,
+      approvalCard({
+        toolName: item.toolName,
+        ttlMinutes: 0,
+        approveToken: token,
+        rejectToken: token,
+        notice: "⏰ 已超时，仍可允许/拒绝；如果已经失效，请在话题里发送 /recover。",
+      }),
+    );
+    item.timer = setTimeout(() => {
+      this.settle(key, "cancelled", "⏰ 审批已过期").catch(() => undefined);
+    }, 30 * 60_000);
+    item.timer.unref?.();
+    this.log.info("审批超时，等待延迟操作", { sessionId: item.sessionId, tool: item.toolName });
   }
 
   async settle(key, outcome, note) {
@@ -112,6 +136,11 @@ export class FeishuApprovals {
     }
     if (note) this.log.info("审批结束", { sessionId: item.sessionId, outcome, note });
     return true;
+  }
+
+  /** Whether this session has an unanswered approval. */
+  hasPending(sessionId) {
+    return [...this.pending.values()].some((item) => item.sessionId === sessionId && !item.settled);
   }
 
   /** Drop every pending approval for a session and recall stale cards. */

@@ -289,6 +289,16 @@ export class FeishuApp {
       if (threadId) this.state.touchThread(threadId, message.messageId);
       else if (rootId) this.state.touchThread(`root:${rootId}`, message.messageId);
       if (await this.questions.tryAnswerText(sessionId, message.text, message.messageId, threadId)) return;
+      if (this.approvals.hasPending(sessionId)) {
+        await this.replyFor(
+          message,
+          errorCard(
+            "还有审批待处理",
+            "请先在审批卡上点「允许一次 / 拒绝」，或发送 `/recover` 取消本次审批后再继续。",
+          ),
+        );
+        return;
+      }
       await this.promptSession(sessionId, message, message.messageId, message.chatId, threadId);
       return;
     }

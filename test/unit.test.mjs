@@ -335,8 +335,20 @@ function questionHarness() {
   };
   const config = { signSecret: "test-secret", questionTtlMs: 60_000 };
   const rotations = [];
+  const lateAnswers = [];
   const questions = new FeishuQuestions({
-    ctx: { on: () => () => {} },
+    ctx: {
+      on: () => () => {},
+      get: (name) =>
+        name === "userQuestions"
+          ? {
+              answer(agent, callId, batch) {
+                lateAnswers.push({ agent, callId, batch });
+                return true;
+              },
+            }
+          : undefined,
+    },
     bridge: {},
     sender,
     state: { linkForSession: () => ({ anchorMessageId: "om_anchor" }) },
@@ -345,7 +357,7 @@ function questionHarness() {
     isAllowed: () => true,
     onAnswered: async (info) => rotations.push(info),
   });
-  return { questions, patches, replies, rotations, recalled };
+  return { questions, patches, replies, rotations, recalled, lateAnswers };
 }
 
 test("plain text replies answer the current question and advance sequentially", async () => {
@@ -446,6 +458,30 @@ test("long card content is truncated below the Feishu 30KB limit", () => {
   const bytes = Buffer.byteLength(JSON.stringify(card), "utf8");
   assert.ok(bytes <= 29_000, `card is ${bytes} bytes`);
   assert.match(JSON.stringify(card), /卡片已截断/);
+});
+
+test("late question answers are delivered through userQuestions.answer", async () => {
+  const { questions, lateAnswers, rotations } = questionHarness();
+  const agent = { id: "session-late" };
+  const pending = questions.handleRequest(
+    {
+      agent,
+      wait: { callId: "call_late" },
+      questions: [{ id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] }],
+    },
+    () => Promise.reject(new Error("should not delegate")),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await questions.markExpired([...questions.pending.keys()][0]);
+  assert.equal(await questions.tryAnswerText("session-late", "B"), true);
+  const result = await pending;
+  assert.deepEqual(result.answers, [{ id: "q1", selected: ["B"] }]);
+  assert.equal(lateAnswers.length, 1);
+  assert.equal(lateAnswers[0].agent, agent);
+  assert.equal(lateAnswers[0].callId, "call_late");
+  assert.deepEqual(lateAnswers[0].batch.answers, [{ id: "q1", selected: ["B"] }]);
+  assert.equal(rotations.length, 1);
+  questions.close();
 });
 
 test("recover cancels pending questions and recalls their cards", async () => {

@@ -115,6 +115,9 @@ export class FeishuQuestions {
       anchorMessageId: link.anchorMessageId,
       chatId: link.chatId,
       threadId: this.state.threadForSession?.(sessionId),
+      agent: request.agent,
+      callId: request.wait?.callId ? String(request.wait.callId) : undefined,
+      expired: false,
       resolve: undefined,
       timer: undefined,
       signal: request.signal,
@@ -146,7 +149,7 @@ export class FeishuQuestions {
     const answer = await new Promise((resolve) => {
       item.resolve = resolve;
       item.timer = setTimeout(() => {
-        this.settle(key, [], "⏰ 问题超时，按跳过回答").catch(() => undefined);
+        this.markExpired(key).catch(() => undefined);
       }, this.config.questionTtlMs);
       item.timer.unref?.();
       if (request.signal) {
@@ -177,6 +180,54 @@ export class FeishuQuestions {
       });
     }, 350);
     timer.unref?.();
+  }
+
+  /** Keep a timed-out question answerable for a grace period. DSH's timed
+   * ask_user_question returns `pending` and stays answerable via
+   * ctx.userQuestions.answer(agent, callId, batch), so deleting the card state
+   * here was what made late replies get stuck. */
+  async markExpired(key) {
+    const item = this.pending.get(key);
+    if (!item || item.settled || item.expired) return;
+    item.expired = true;
+    const question = item.questions[item.index];
+    const token = this.signer.sign({ kind: "question", key: item.key });
+    const notice = "⏰ 已超时，仍可继续回答；提交后会作为延迟答案。";
+    if (item.isCard) {
+      this.patchSoon(
+        item,
+        questionCard({
+          question,
+          index: item.index,
+          total: item.questions.length,
+          token,
+          selected: item.selections.get(question.id) ?? [],
+          notice,
+        }),
+        true,
+      );
+    } else {
+      void this.sender.replyText(item.anchorMessageId, notice);
+    }
+    item.timer = setTimeout(() => {
+      this.settle(key, [], "⏰ 问题已过期").catch(() => undefined);
+    }, 30 * 60_000);
+    item.timer.unref?.();
+    this.log.info("提问超时，等待延迟回答", { sessionId: item.sessionId, callId: item.callId });
+  }
+
+  async deliverLate(item, answers) {
+    if (!item.callId || !item.agent) return false;
+    const service = this.ctx.get?.("userQuestions") ?? this.ctx.userQuestions;
+    if (!service?.answer) return false;
+    try {
+      const accepted = service.answer(item.agent, item.callId, { answers });
+      if (accepted) this.log.info("延迟回答已送入 DSH", { sessionId: item.sessionId, callId: item.callId });
+      return accepted === true;
+    } catch (error) {
+      this.log.warn("延迟回答送入失败", { sessionId: item.sessionId, error: describeError(error) });
+      return false;
+    }
   }
 
   async settle(key, answers, note, options = {}) {
@@ -241,7 +292,9 @@ export class FeishuQuestions {
       }
       return { done: false, remaining: item.questions.length - next };
     }
-    await this.settle(item.key, this.answersInOrder(item), undefined, {
+    const answers = this.answersInOrder(item);
+    await this.deliverLate(item, answers);
+    await this.settle(item.key, answers, undefined, {
       rotate: true,
       anchorMessageId: options.anchorMessageId || item.messageId,
       threadId: options.threadId,

@@ -127,7 +127,7 @@ export function helpCard() {
           "",
           "**审批与提问**",
           "DSH 的审批请求会变成飞书卡片：只支持「允许一次 / 拒绝」（DSH 的审批是一次性授权）。",
-          "模型反问：选择题用按钮（单选点一下、多选切换后提交），纯文字题用卡片内输入框提交；也可以直接在话题里回复文字。",
+          "模型反问：选择题用按钮（单选点一下、多选切换后提交），纯文字题用卡片内输入框提交；超时后仍可继续回答。审批卡超时后也保留 30 分钟可操作。",
         ].join("\n"),
       ),
       note("全程 WebSocket 长连接：不监听端口，也不需要公网地址。"),
@@ -373,11 +373,11 @@ export function permissionCard({ sid, current, perms }) {
   return card({ title: "🔐 选择权限预设", template: "orange", elements });
 }
 
-export function approvalCard({ toolName, reason, sessionTitle, ttlMinutes, approveToken, rejectToken }) {
+export function approvalCard({ toolName, reason, sessionTitle, ttlMinutes, approveToken, rejectToken, notice }) {
   const lines = [`**工具**：\`${truncate(toolName, 80)}\``];
   if (reason) lines.push(`**原因**：${truncate(reason, 500)}`);
   if (sessionTitle) lines.push(`**会话**：${truncate(sessionTitle, 80)}`);
-  lines.push("", `DSH 审批仅对本次调用生效（${ttlMinutes} 分钟内有效）。`);
+  lines.push("", ttlMinutes > 0 ? `DSH 审批仅对本次调用生效（${ttlMinutes} 分钟内有效）。` : "DSH 审批仅对本次调用生效。");
   return card({
     title: "🔐 需要审批",
     template: "orange",
@@ -391,7 +391,7 @@ export function approvalCard({ toolName, reason, sessionTitle, ttlMinutes, appro
           { tag: "column", width: "auto", elements: [button("❌ 拒绝", "danger", { a: "reject", t: rejectToken })] },
         ],
       },
-      note("需要长期放行请在 Web 端切换权限预设；DSH 不提供「始终允许」。"),
+      note(notice || "需要长期放行请在 Web 端切换权限预设；DSH 不提供「始终允许」。"),
     ],
   });
 }
