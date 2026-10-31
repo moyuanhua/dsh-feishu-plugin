@@ -87,7 +87,7 @@ export class FeishuQuestions {
     }
     for (const item of this.pending.values()) {
       clearTimeout(item.timer);
-      item.resolve?.({ answers: [] });
+      item.resolve?.([]);
     }
     this.pending.clear();
   }
@@ -426,6 +426,29 @@ export class FeishuQuestions {
     return matched
       ? { id: question.id, selected: [matched] }
       : { id: question.id, selected: [], custom: trimmed };
+  }
+
+  /** Drop every pending question for a session and recall stale cards. */
+  async recover(sessionId) {
+    let count = 0;
+    for (const [key, item] of [...this.pending.entries()]) {
+      if (item.sessionId !== sessionId) continue;
+      item.settled = true;
+      this.pending.delete(key);
+      clearTimeout(item.timer);
+      if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
+      item.resolve?.([]);
+      const recalled = await this.sender.recallMessage(item.messageId);
+      if (!recalled.ok) {
+        await this.sender.patchCard(
+          item.messageId,
+          questionAnsweredCard({ summary: "♻️ 会话已恢复，本次提问已取消。" }),
+        );
+      }
+      count += 1;
+    }
+    if (count) this.log.info("提问已恢复清理", { sessionId, count });
+    return count;
   }
 
   /**

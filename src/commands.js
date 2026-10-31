@@ -20,6 +20,7 @@ const KNOWN = new Set([
   "steer",
   "queue",
   "cancel",
+  "recover",
 ]);
 
 export function parseCommand(text) {

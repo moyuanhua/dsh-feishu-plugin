@@ -565,6 +565,26 @@ export class FeishuApp {
 
   // ---- commands ----------------------------------------------------------
 
+  async recoverSession(sessionId, message) {
+    await this.bridge.cancel(sessionId);
+    // Give the answerer a beat to observe the abort before clearing software
+    // state; the card operations themselves are best-effort.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const questions = await this.questions.recover(sessionId);
+    const approvals = await this.approvals.recover(sessionId);
+    const run = this.runs.recover(sessionId);
+    const lines = [];
+    if (run) lines.push("已停止当前运行卡。");
+    if (questions) lines.push(`已清理 ${questions} 张未回答问题卡。`);
+    if (approvals) lines.push(`已清理 ${approvals} 张未审批卡片。`);
+    if (!lines.length) lines.push("没有发现未完成的运行卡、提问卡或审批卡。");
+    lines.push("现在可以重新发送消息继续。");
+    await this.replyFor(
+      message,
+      compactResultCard({ title: "♻️ 已恢复", template: "green", lines }),
+    );
+  }
+
   async handleCommand({ message, command, sessionId, threadId }) {
     const main = !threadId;
     const name = command.name;
@@ -638,6 +658,14 @@ export class FeishuApp {
           ].filter(Boolean),
         }),
       );
+      return;
+    }
+    if (name === "recover") {
+      if (!sessionId) {
+        await this.replyFor(message, errorCard("没有会话", "请在卡住的话题里发送 `/recover`。"));
+        return;
+      }
+      await this.recoverSession(sessionId, message);
       return;
     }
     if (name === "stop") {

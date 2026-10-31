@@ -303,6 +303,24 @@ export class RunCards {
     this.finish(run, "error", errorMessage(payload?.error));
   }
 
+  /** Stop and clear a run card without waiting for DSH turn events. */
+  recover(sessionId) {
+    const run = this.runs.get(sessionId);
+    if (!run) return false;
+    if (run.patchTimer) {
+      clearTimeout(run.patchTimer);
+      run.patchTimer = undefined;
+    }
+    run.finished = true;
+    run.finishedAt = Date.now();
+    run.status = "stopped";
+    run.canStop = false;
+    void this.patch(run);
+    this.runs.delete(sessionId);
+    this.log.info("运行卡片已恢复清理", { sessionId });
+    return true;
+  }
+
   async stop(sessionId) {
     const run = this.runs.get(sessionId);
     if (run) {

@@ -315,6 +315,7 @@ test("question cards use buttons for single, multi-select and text prompts", () 
 function questionHarness() {
   const patches = [];
   const replies = [];
+  const recalled = [];
   const sender = {
     async replyCard(_anchor, card) {
       return { ok: true, messageId: "om_question" };
@@ -325,6 +326,10 @@ function questionHarness() {
     },
     async patchCard(messageId, card) {
       patches.push({ messageId, card });
+      return { ok: true };
+    },
+    async recallMessage(messageId) {
+      recalled.push(messageId);
       return { ok: true };
     },
   };
@@ -340,7 +345,7 @@ function questionHarness() {
     isAllowed: () => true,
     onAnswered: async (info) => rotations.push(info),
   });
-  return { questions, patches, replies, rotations };
+  return { questions, patches, replies, rotations, recalled };
 }
 
 test("plain text replies answer the current question and advance sequentially", async () => {
@@ -441,6 +446,25 @@ test("long card content is truncated below the Feishu 30KB limit", () => {
   const bytes = Buffer.byteLength(JSON.stringify(card), "utf8");
   assert.ok(bytes <= 29_000, `card is ${bytes} bytes`);
   assert.match(JSON.stringify(card), /卡片已截断/);
+});
+
+test("recover cancels pending questions and recalls their cards", async () => {
+  const { questions, recalled } = questionHarness();
+  const pending = questions.handleRequest(
+    {
+      agent: { id: "session-recover" },
+      questions: [{ id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] }],
+    },
+    () => Promise.reject(new Error("should not delegate")),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const count = await questions.recover("session-recover");
+  assert.equal(count, 1);
+  assert.equal(questions.pending.size, 0);
+  assert.deepEqual(recalled, ["om_question"]);
+  const result = await pending;
+  assert.deepEqual(result.answers, []);
+  questions.close();
 });
 
 test("run cards rotate to a fresh card after a question is answered", async () => {

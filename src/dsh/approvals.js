@@ -114,6 +114,26 @@ export class FeishuApprovals {
     return true;
   }
 
+  /** Drop every pending approval for a session and recall stale cards. */
+  async recover(sessionId) {
+    let count = 0;
+    for (const [key, item] of [...this.pending.entries()]) {
+      if (item.sessionId !== sessionId) continue;
+      item.settled = true;
+      this.pending.delete(key);
+      clearTimeout(item.timer);
+      if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
+      item.resolve?.("cancelled");
+      const recalled = await this.sender.recallMessage(item.messageId);
+      if (!recalled.ok) {
+        await this.sender.patchCard(item.messageId, approvalResultCard({ approved: false, toolName: item.toolName }));
+      }
+      count += 1;
+    }
+    if (count) this.log.info("审批已恢复清理", { sessionId, count });
+    return count;
+  }
+
   /** Card action: `{a:'approve'|'reject', t}`. */
   async handleAction(action) {
     const value = action.value ?? {};
