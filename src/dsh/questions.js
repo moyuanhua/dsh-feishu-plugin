@@ -317,6 +317,33 @@ export class FeishuQuestions {
     };
   }
 
+  async handleTextSubmit(action, value) {
+    const payload = this.signer.verify(value.t);
+    if (!payload || payload.kind !== "question") {
+      return { toast: { type: "error", content: "凭证无效或已过期" } };
+    }
+    const item = this.pending.get(payload.key);
+    if (!item) return { toast: { type: "error", content: "问题已回答或已过期" } };
+    if (Number(value.i) !== item.index) {
+      return { toast: { type: "error", content: "请回答当前显示的问题" } };
+    }
+    const question = item.questions[item.index];
+    const custom = textOf(action.formValue?.custom);
+    if (!custom) return { toast: { type: "error", content: "请先输入文字答案" } };
+    const existing = [...(item.selections.get(question.id) ?? [])].filter((label) => labelsOf(question).includes(label));
+    const result = await this.recordAnswer(item, {
+      id: question.id,
+      selected: question.multiSelect ? existing : [],
+      custom,
+    });
+    return {
+      toast: {
+        type: "success",
+        content: result.done ? "已提交" : `已记录，还剩 ${result.remaining} 个问题`,
+      },
+    };
+  }
+
   handleTextPrompt(value) {
     const payload = this.signer.verify(value.t);
     if (!payload || payload.kind !== "question") {
@@ -352,6 +379,7 @@ export class FeishuQuestions {
     }
     if (value.a === "qsubmit") return this.handleMultiSubmit(action, value);
     if (value.a === "qpick") return this.handlePick(action, value);
+    if (value.a === "qtextsubmit") return this.handleTextSubmit(action, value);
     if (value.a === "qtext") return this.handleTextPrompt(action.value ?? {});
 
     const item = this.pending.get(payload.key);

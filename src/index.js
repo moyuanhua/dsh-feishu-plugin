@@ -13,7 +13,7 @@ import { describeError, maskId } from "./utils.js";
 
 export { Config };
 export const name = "dsh-feishu-plugin";
-const BUILD_TAG = "0.5.12";
+const BUILD_TAG = "0.5.13";
 export const inject = ["sessionController", "sessions"];
 
 export async function apply(ctx, rawConfig) {

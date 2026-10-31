@@ -79,7 +79,7 @@ export function helpCard() {
           "",
           "**审批与提问**",
           "DSH 的审批请求会变成飞书卡片：只支持「允许一次 / 拒绝」（DSH 的审批是一次性授权）。",
-          "模型反问会变成按钮卡：单选点一下即提交，多选点按钮切换后提交；也可以直接在话题里回复文字。",
+          "模型反问会变成混合卡：选项用按钮单选/多选，文字答案用卡片内输入框提交；也可以直接在话题里回复文字。",
         ].join("\n"),
       ),
       note("全程 WebSocket 长连接：不监听端口，也不需要公网地址。"),
@@ -397,7 +397,28 @@ export function questionCard({ question, index = 0, total = 1, token, selected =
   } else {
     elements.push(note("直接在本话题回复文字作答。"));
   }
-  elements.push(button("✍️ 用文字回答", "default", { a: "qtext", t: token, i: index }));
+  elements.push(md("**其它答案 / 文字回答**"));
+  elements.push({
+    tag: "form",
+    name: "q_text_form",
+    elements: [
+      {
+        tag: "input",
+        name: "custom",
+        width: "fill",
+        required: false,
+        placeholder: { tag: "plain_text", content: "在这里输入文字答案，或直接在本话题回复" },
+      },
+      {
+        tag: "button",
+        name: "submit",
+        type: "primary",
+        form_action_type: "submit",
+        text: { tag: "plain_text", content: "✅ 提交文字" },
+        behaviors: [{ type: "callback", value: { a: "qtextsubmit", t: token, i: index } }],
+      },
+    ],
+  });
   if (notice) elements.push(note(notice));
 
   return card({
