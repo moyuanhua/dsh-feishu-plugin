@@ -279,27 +279,28 @@ test("every card builder produces serializable JSON 2.0", () => {
 });
 
 
-test("question cards use a Feishu form with select, multi-select and text input", () => {
+test("question cards use buttons for single, multi-select and text prompts", () => {
   const single = questionCard({
     token: "t",
     question: { id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] },
     index: 0,
     total: 2,
   });
-  const singleForm = single.body.elements.find((element) => element.tag === "form");
-  assert.ok(singleForm);
-  assert.equal(singleForm.elements.find((element) => element.name === "choice").tag, "select_static");
-  assert.equal(singleForm.elements.find((element) => element.name === "custom").tag, "input");
-  assert.equal(singleForm.elements.find((element) => element.name === "submit").form_action_type, "submit");
+  const singleButtons = single.body.elements.filter((element) => element.tag === "button");
+  assert.ok(singleButtons.some((element) => element.behaviors?.[0]?.value?.a === "qpick"));
+  assert.ok(singleButtons.some((element) => element.behaviors?.[0]?.value?.a === "qtext"));
+  assert.equal(single.form, undefined);
 
   const multi = questionCard({
     token: "t",
     question: { id: "q2", question: "Pick many", multiSelect: true, options: [{ label: "A" }, { label: "B" }] },
     index: 1,
     total: 2,
+    selected: ["A"],
   });
-  const multiForm = multi.body.elements.find((element) => element.tag === "form");
-  assert.equal(multiForm.elements.find((element) => element.name === "choice").tag, "multi_select_static");
+  const multiButtons = multi.body.elements.filter((element) => element.tag === "button");
+  assert.ok(multiButtons.some((element) => element.behaviors?.[0]?.value?.a === "qsubmit"));
+  assert.ok(multiButtons.some((element) => element.text.content.includes("✅ A")));
 });
 
 function questionHarness() {
@@ -357,7 +358,7 @@ test("plain text replies answer the current question and advance sequentially", 
   questions.close();
 });
 
-test("form submit carries multi-select values plus custom text", async () => {
+test("multi-select toggles buttons and submits the selected labels", async () => {
   const { questions, patches, rotations } = questionHarness();
   const pending = questions.handleRequest(
     {
@@ -371,21 +372,23 @@ test("form submit carries multi-select values plus custom text", async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   const item = [...questions.pending.values()][0];
   const token = questions.signer.sign({ kind: "question", key: item.key });
+  const base = { t: token, i: 0 };
+  await questions.handleAction({ value: { a: "qpick", ...base, s: "Red" }, operatorOpenId: "ou_test" });
+  await questions.handleAction({ value: { a: "qpick", ...base, s: "Blue" }, operatorOpenId: "ou_test" });
+  assert.deepEqual(item.selections.get("q1"), ["Red", "Blue"]);
   const action = await questions.handleAction({
-    value: { a: "qsubmit", t: token, i: 0 },
-    formValue: { choice: ["Red", "Blue"], custom: "plus note" },
+    value: { a: "qsubmit", ...base },
     operatorOpenId: "ou_test",
   });
   assert.equal(action.toast.type, "success");
   const result = await pending;
-  assert.deepEqual(result.answers, [{ id: "q1", selected: ["Red", "Blue"], custom: "plus note" }]);
+  assert.deepEqual(result.answers, [{ id: "q1", selected: ["Red", "Blue"] }]);
   assert.equal(rotations.length, 1);
   assert.equal(rotations[0].anchorMessageId, "om_question");
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.ok(patches.length >= 1);
   questions.close();
 });
-
 
 test("run cards rotate to a fresh card after a question is answered", async () => {
   const sent = [];

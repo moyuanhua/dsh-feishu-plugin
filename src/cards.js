@@ -79,7 +79,7 @@ export function helpCard() {
           "",
           "**审批与提问**",
           "DSH 的审批请求会变成飞书卡片：只支持「允许一次 / 拒绝」（DSH 的审批是一次性授权）。",
-          "模型反问会变成表单卡：单选、多选、文字输入；多个问题逐题展示，也可以直接在话题里回复文字。",
+          "模型反问会变成按钮卡：单选点一下即提交，多选点按钮切换后提交；也可以直接在话题里回复文字。",
         ].join("\n"),
       ),
       note("全程 WebSocket 长连接：不监听端口，也不需要公网地址。"),
@@ -356,81 +356,49 @@ export function approvalResultCard({ approved, toolName }) {
   });
 }
 
-export function questionCard({ question, index = 0, total = 1, token }) {
+export function questionCard({ question, index = 0, total = 1, token, selected = [], notice }) {
   const elements = [];
   const head = question.header ? `**${question.header}**\n` : "";
   elements.push(md(`${head}${question.question}`));
   if (question.detail) elements.push(md(truncate(question.detail, 4_000)));
 
   const options = Array.isArray(question.options)
-    ? question.options.filter((option) => option && option.label).slice(0, 50)
+    ? question.options.filter((option) => option && option.label)
     : [];
-  const fields = [];
+  const picked = new Set(Array.isArray(selected) ? selected : []);
 
   if (options.length > 0) {
-    const choiceOptions = options.map((option) => ({
-      text: { tag: "plain_text", content: truncate(option.label, 100) },
-      value: truncate(option.label, 100),
-    }));
+    for (const option of options.slice(0, 10)) {
+      const label = truncate(option.label, 60);
+      elements.push(
+        button(`${picked.has(option.label) ? "✅ " : ""}${label}`, picked.has(option.label) ? "primary" : "default", {
+          a: "qpick",
+          t: token,
+          i: index,
+          s: option.label,
+        }),
+      );
+    }
+    if (options.length > 10) {
+      elements.push(note(`选项较多，仅展示前 10 个；其余请直接回复文字。`));
+    }
     if (question.multiSelect) {
-      fields.push({
-        tag: "multi_select_static",
-        name: "choice",
-        type: "default",
-        width: "fill",
-        required: false,
-        placeholder: { tag: "plain_text", content: "可多选（选完点提交）" },
-        options: choiceOptions,
-      });
+      elements.push(
+        button(`✅ 提交${picked.size ? `（${picked.size}）` : ""}`, picked.size ? "primary" : "default", {
+          a: "qsubmit",
+          t: token,
+          i: index,
+        }),
+      );
+      elements.push(note("可多选：点选项切换选中，最后点「提交」；也可以直接回复文字，多个用逗号分隔。"));
     } else {
-      fields.push({
-        tag: "select_static",
-        name: "choice",
-        type: "default",
-        width: "fill",
-        required: false,
-        placeholder: { tag: "plain_text", content: "请选择" },
-        options: choiceOptions,
-      });
+      elements.push(note("点选项即提交；也可以直接回复文字作为自定义答案。"));
     }
-    if (options.length < (question.options?.length ?? 0)) {
-      elements.push(note(`选项较多，仅展示前 ${options.length} 个；其余请直接回复文字。`));
-    }
+  } else {
+    elements.push(note("直接在本话题回复文字作答。"));
   }
-
-  fields.push({
-    tag: "input",
-    name: "custom",
-    width: "fill",
-    required: false,
-    placeholder: {
-      tag: "plain_text",
-      content: options.length > 0 ? "其它答案（可选）" : "输入你的回答",
-    },
-  });
-  fields.push({
-    tag: "button",
-    name: "submit",
-    type: "primary",
-    form_action_type: "submit",
-    text: { tag: "plain_text", content: "✅ 提交" },
-    behaviors: [{ type: "callback", value: { a: "qsubmit", t: token, i: index } }],
-  });
-
-  elements.push({
-    tag: "form",
-    name: "q_form",
-    elements: fields,
-  });
-  elements.push(
-    note(
-      options.length > 0
-        ? question.multiSelect
-          ? "可多选；选完点「提交」。也可以直接在本话题回复选项，多个用逗号分隔。"
-          : "选择后点「提交」；也可以直接在本话题回复选项或文字。"
-        : "在输入框填写后点「提交」；也可以直接在本话题回复文字。",
-    ),
-  );
+  elements.push(button("✍️ 用文字回答", "default", { a: "qtext", t: token, i: index }));
+  if (notice) elements.push(note(notice));
 
   return card({
     title: `❓ 需要你的决定 (${index + 1}/${total})`,
