@@ -8,6 +8,7 @@ import { createSigner } from "../src/security.js";
 import { StateStore } from "../src/state.js";
 import { DshBridge } from "../src/dsh/controller.js";
 import { FeishuQuestions } from "../src/dsh/questions.js";
+import { RunCards } from "../src/dsh/runs.js";
 import { isUnder, validateDirectory } from "../src/utils.js";
 import {
   approvalCard,
@@ -383,4 +384,64 @@ test("form submit carries multi-select values plus custom text", async () => {
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.ok(patches.length >= 1);
   questions.close();
+});
+
+
+test("run cards rotate to a fresh card after a question is answered", async () => {
+  const sent = [];
+  const patches = [];
+  const runs = new RunCards({
+    bridge: {},
+    sender: {
+      async replyCard(anchor, card) {
+        sent.push({ anchor, card });
+        return { ok: true, messageId: "om_new" };
+      },
+      async patchCard(messageId, card) {
+        patches.push({ messageId, card });
+        return { ok: true };
+      },
+      async sendCard() {
+        return { ok: false };
+      },
+    },
+    state: {},
+    config: { maxAnswerChars: 4_000, streamThrottleMs: 100 },
+    log: { debug() {}, info() {}, warn() {} },
+  });
+  runs.runs.set("session-rotate", {
+    sessionId: "session-rotate",
+    chatId: "oc_chat",
+    anchorMessageId: "om_old",
+    messageId: "om_old_run",
+    status: "running",
+    startedAt: Date.now(),
+    tools: [],
+    toolTotal: 0,
+    text: "old partial",
+    streamingText: "old partial",
+    streamingReasoning: "",
+    turn: 2,
+    step: 1,
+    error: "",
+    canStop: true,
+    promptCount: 1,
+    model: "p/m",
+    perm: "workspace-write",
+    finished: false,
+  });
+  const fresh = await runs.rotate("session-rotate", {
+    anchorMessageId: "om_question",
+    chatId: "oc_chat",
+    threadId: "omt_topic",
+  });
+  assert.ok(fresh);
+  assert.equal(fresh.continued, true);
+  assert.equal(fresh.messageId, "om_new");
+  assert.equal(sent[0].anchor, "om_question");
+  assert.equal(sent[0].card.header.title.content, "🤖 继续处理");
+  assert.equal(runs.runs.get("session-rotate"), fresh);
+  assert.equal(patches.length, 1);
+  assert.match(JSON.stringify(patches[0].card), /回答已提交/);
+  runs.dispose();
 });
