@@ -83,6 +83,69 @@ export class RunCards {
     return run;
   }
 
+  /**
+   * Close the current run card and open a fresh one for the rest of the same
+   * turn. Used after ask-user-question is answered: the model keeps working,
+   * but its answer should appear under the user's reply, not inside the card
+   * that was already on screen before the question.
+   */
+  async rotate(sessionId, { anchorMessageId, chatId, threadId } = {}) {
+    const old = this.runs.get(sessionId);
+    if (!old || old.finished) return undefined;
+    old.finished = true;
+    old.finishedAt = Date.now();
+    old.status = "continued";
+    old.canStop = false;
+    if (old.patchTimer) {
+      clearTimeout(old.patchTimer);
+      old.patchTimer = undefined;
+    }
+    // Keep the tool/thinking history, but hide the partial answer in the old
+    // card; the complete answer will be streamed into the new card.
+    old.text = "";
+    old.streamingText = "";
+    void this.patch(old);
+
+    const run = {
+      sessionId,
+      chatId: chatId || old.chatId,
+      anchorMessageId,
+      threadId: threadId || old.threadId,
+      messageId: "",
+      status: "starting",
+      startedAt: Date.now(),
+      finishedAt: 0,
+      tools: [],
+      toolTotal: 0,
+      text: "",
+      streamingText: "",
+      streamingReasoning: "",
+      turn: old.turn,
+      step: old.step,
+      error: "",
+      canStop: true,
+      promptCount: old.promptCount,
+      model: old.model,
+      perm: old.perm,
+      timer: undefined,
+      patchTimer: undefined,
+      finished: false,
+      continued: true,
+    };
+    this.runs.set(sessionId, run);
+    const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
+    let sent = anchorMessageId
+      ? await this.sender.replyCard(anchorMessageId, card)
+      : { ok: false, error: "missing anchor" };
+    if (!sent.ok && (chatId || run.chatId)) {
+      sent = await this.sender.sendCard(chatId || run.chatId, card);
+    }
+    if (sent.ok) run.messageId = sent.messageId;
+    else run.error = sent.error ?? "无法发送继续处理卡片";
+    this.schedule(run, true);
+    return run;
+  }
+
   schedule(run, immediate = false, delayOverride) {
     if (run.finished && !immediate) return;
     if (run.patchTimer) return;

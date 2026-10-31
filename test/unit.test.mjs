@@ -318,6 +318,7 @@ function questionHarness() {
     },
   };
   const config = { signSecret: "test-secret", questionTtlMs: 60_000 };
+  const rotations = [];
   const questions = new FeishuQuestions({
     ctx: { on: () => () => {} },
     bridge: {},
@@ -326,8 +327,9 @@ function questionHarness() {
     config,
     log: { debug() {}, info() {}, warn() {} },
     isAllowed: () => true,
+    onAnswered: async (info) => rotations.push(info),
   });
-  return { questions, patches, replies };
+  return { questions, patches, replies, rotations };
 }
 
 test("plain text replies answer the current question and advance sequentially", async () => {
@@ -355,7 +357,7 @@ test("plain text replies answer the current question and advance sequentially", 
 });
 
 test("form submit carries multi-select values plus custom text", async () => {
-  const { questions, patches } = questionHarness();
+  const { questions, patches, rotations } = questionHarness();
   const pending = questions.handleRequest(
     {
       agent: { id: "session-form" },
@@ -376,6 +378,8 @@ test("form submit carries multi-select values plus custom text", async () => {
   assert.equal(action.toast.type, "success");
   const result = await pending;
   assert.deepEqual(result.answers, [{ id: "q1", selected: ["Red", "Blue"], custom: "plus note" }]);
+  assert.equal(rotations.length, 1);
+  assert.equal(rotations[0].anchorMessageId, "om_question");
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.ok(patches.length >= 1);
   questions.close();

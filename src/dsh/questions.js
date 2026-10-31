@@ -52,7 +52,7 @@ function questionText(question, index, total) {
 }
 
 export class FeishuQuestions {
-  constructor({ ctx, bridge, sender, state, config, log, isAllowed }) {
+  constructor({ ctx, bridge, sender, state, config, log, isAllowed, onAnswered }) {
     this.ctx = ctx;
     this.bridge = bridge;
     this.sender = sender;
@@ -60,6 +60,7 @@ export class FeishuQuestions {
     this.config = config;
     this.log = log;
     this.isAllowed = isAllowed;
+    this.onAnswered = onAnswered;
     this.signer = createSigner(config.signSecret);
     this.pending = new Map();
     // Same precedence problem as approvals: claim Feishu-bound sessions
@@ -111,6 +112,8 @@ export class FeishuQuestions {
       messageId: undefined,
       isCard: false,
       anchorMessageId: link.anchorMessageId,
+      chatId: link.chatId,
+      threadId: this.state.threadForSession?.(sessionId),
       resolve: undefined,
       timer: undefined,
       signal: request.signal,
@@ -169,13 +172,27 @@ export class FeishuQuestions {
     timer.unref?.();
   }
 
-  async settle(key, answers, note) {
+  async settle(key, answers, note, options = {}) {
     const item = this.pending.get(key);
     if (!item || item.settled) return false;
     item.settled = true;
     this.pending.delete(key);
     clearTimeout(item.timer);
     if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
+    // Rotate before resolving: the model may start streaming as soon as the
+    // tool result settles, and those events must land on the new card.
+    if (options.rotate && answers.length > 0 && this.onAnswered) {
+      try {
+        await this.onAnswered({
+          sessionId: item.sessionId,
+          anchorMessageId: options.anchorMessageId || item.messageId,
+          chatId: item.chatId,
+          threadId: options.threadId || item.threadId,
+        });
+      } catch (error) {
+        this.log.warn("切换继续处理卡片失败", { error: describeError(error) });
+      }
+    }
     item.resolve?.(answers);
     const summary = summaryText(item.questions, answers);
     if (item.isCard) {
@@ -188,7 +205,7 @@ export class FeishuQuestions {
   }
 
   /** Record one answer and either show the next question or settle. */
-  async recordAnswer(item, answer) {
+  async recordAnswer(item, answer, options = {}) {
     const question = item.questions[item.index];
     item.answers.set(question.id, answer);
     const next = item.index + 1;
@@ -210,7 +227,11 @@ export class FeishuQuestions {
       }
       return { done: false, remaining: item.questions.length - next };
     }
-    await this.settle(item.key, this.answersInOrder(item));
+    await this.settle(item.key, this.answersInOrder(item), undefined, {
+      rotate: true,
+      anchorMessageId: options.anchorMessageId || item.messageId,
+      threadId: options.threadId,
+    });
     return { done: true, remaining: 0 };
   }
 
@@ -235,7 +256,7 @@ export class FeishuQuestions {
       return { toast: { type: "error", content: "请选择一个选项，或填写文字答案" } };
     }
     const answer = { id: question.id, selected, ...(custom ? { custom } : {}) };
-    const result = await this.recordAnswer(item, answer);
+    const result = await this.recordAnswer(item, answer, { anchorMessageId: item.messageId });
     return {
       toast: {
         type: "success",
@@ -302,7 +323,7 @@ export class FeishuQuestions {
    * Consume a plain reply in the topic as the answer to the current question.
    * Returns true when the text was used (and must not also be sent to the model).
    */
-  async tryAnswerText(sessionId, text) {
+  async tryAnswerText(sessionId, text, anchorMessageId, threadId) {
     const trimmed = textOf(text);
     if (!trimmed) return false;
     const item = [...this.pending.values()].find((entry) => entry.sessionId === sessionId && !entry.settled);
@@ -310,7 +331,10 @@ export class FeishuQuestions {
     const question = item.questions[item.index];
     const answer = this.textAnswer(question, trimmed);
     if (!answer) return false;
-    await this.recordAnswer(item, answer);
+    await this.recordAnswer(item, answer, {
+      anchorMessageId: anchorMessageId || item.messageId,
+      threadId,
+    });
     return true;
   }
 }

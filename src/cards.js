@@ -482,19 +482,25 @@ function toolLine(tool) {
 export function runCard({ run, maxAnswerChars }) {
   const status = run.status;
   const title =
-    status === "done"
-      ? "✅ 回合完成"
-      : status === "error"
-        ? "❌ 回合出错"
-        : status === "stopped"
-          ? "⏹ 已停止"
-          : status === "starting"
-            ? "⏳ 正在开始"
-            : "🤖 处理中";
-  const template = status === "done" ? "green" : status === "error" ? "red" : status === "stopped" ? "grey" : "blue";
+    status === "continued"
+      ? "➡️ 回答已提交"
+      : status === "done"
+        ? "✅ 回合完成"
+        : status === "error"
+          ? "❌ 回合出错"
+          : status === "stopped"
+            ? "⏹ 已停止"
+            : status === "starting"
+              ? run.continued
+                ? "🤖 继续处理"
+                : "⏳ 正在开始"
+              : "🤖 处理中";
+  const template =
+    status === "done" ? "green" : status === "error" ? "red" : status === "stopped" || status === "continued" ? "grey" : "blue";
 
-  const finished = status === "done" || status === "error" || status === "stopped";
-  const answer = ((finished ? run.text || run.streamingText : run.streamingText || run.text) || "").trim();
+  const finished = status === "done" || status === "error" || status === "stopped" || status === "continued";
+  const answer =
+    status === "continued" ? "" : ((finished ? run.text || run.streamingText : run.streamingText || run.text) || "").trim();
   const reasoning = (run.streamingReasoning || "").trim();
   const elapsed = run.startedAt ? Date.now() - run.startedAt : 0;
 
@@ -509,17 +515,21 @@ export function runCard({ run, maxAnswerChars }) {
   // swap places, so streaming does not collapse the card height.
   const runningTool = [...(run.tools ?? [])].reverse().find((tool) => tool.status === "running");
   const statusLine =
-    status === "done"
-      ? "✅ 完成"
-      : status === "error"
-        ? "❌ 出错"
-        : status === "stopped"
-          ? "⏹ 已停止"
-          : answer
-            ? "✍️ 正在生成回答…"
-            : runningTool
-              ? `🔧 正在调用 ${truncate(runningTool.name, 30)}…`
-              : "💭 正在思考…";
+    status === "continued"
+      ? "✅ 回答已提交，后续输出见下方新卡片"
+      : status === "done"
+        ? "✅ 完成"
+        : status === "error"
+          ? "❌ 出错"
+          : status === "stopped"
+            ? "⏹ 已停止"
+            : answer
+              ? "✍️ 正在生成回答…"
+              : runningTool
+                ? `🔧 正在调用 ${truncate(runningTool.name, 30)}…`
+                : run.continued
+                  ? "💭 继续处理…"
+                  : "💭 正在思考…";
 
   const elements = [];
   elements.push(md(`${meta.join(" · ")}\n${statusLine}`));

@@ -120,6 +120,13 @@ export class FeishuApp {
       config: this.config,
       log: this.log,
       isAllowed: (openId) => this.state.isAllowed(openId, this.config.allowUsers),
+      onAnswered: async (info) => {
+        try {
+          await this.runs.rotate(info.sessionId, info);
+        } catch (error) {
+          this.log.warn("切换继续处理卡片失败", { error: describeError(error) });
+        }
+      },
     });
 
     this.disposers.push(
@@ -281,7 +288,7 @@ export class FeishuApp {
     if (sessionId) {
       if (threadId) this.state.touchThread(threadId, message.messageId);
       else if (rootId) this.state.touchThread(`root:${rootId}`, message.messageId);
-      if (await this.questions.tryAnswerText(sessionId, message.text)) return;
+      if (await this.questions.tryAnswerText(sessionId, message.text, message.messageId, threadId)) return;
       await this.promptSession(sessionId, message, message.messageId, message.chatId, threadId);
       return;
     }
