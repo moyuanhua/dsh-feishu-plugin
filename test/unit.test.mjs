@@ -440,6 +440,25 @@ test("multi-select toggles buttons and submits the selected labels", async () =>
   questions.close();
 });
 
+test("cards convert markdown tables beyond the Feishu limit of five", () => {
+  const table = "| A | B |\n|---|---|\n| 1 | 2 |";
+  const answer = Array.from({ length: 7 }, () => table).join("\n\n");
+  const card = runCard({
+    run: {
+      sessionId: "s1",
+      status: "done",
+      startedAt: Date.now(),
+      tools: [],
+      text: answer,
+      streamingText: answer,
+    },
+    maxAnswerChars: 20_000,
+  });
+  const json = JSON.stringify(card);
+  assert.match(json, /表格过多/);
+  assert.ok((json.match(/```/g) ?? []).length >= 4);
+});
+
 test("long card content is truncated below the Feishu 30KB limit", () => {
   const huge = "长".repeat(20_000);
   const card = runCard({

@@ -32,6 +32,79 @@ function textNodes(elements, out = []) {
   return out;
 }
 
+const MAX_CARD_TABLES = 5;
+
+function isTableSeparator(line) {
+  const text = String(line).trim();
+  if (!text.includes("|")) return false;
+  const cells = text.replace(/^\|/, "").replace(/\|$/, "").split("|");
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function tableSpans(text) {
+  const lines = String(text).split("\n");
+  const spans = [];
+  let inCode = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/^\s*(```|~~~)/.test(lines[i])) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) continue;
+    if (i > 0 && isTableSeparator(lines[i]) && lines[i - 1].includes("|")) {
+      let end = i;
+      while (end + 1 < lines.length && lines[end + 1].includes("|") && lines[end + 1].trim() !== "") end += 1;
+      spans.push([i - 1, end]);
+      i = end;
+    }
+  }
+  return spans;
+}
+
+function limitTablesInText(text, budget) {
+  const spans = tableSpans(text);
+  if (spans.length <= budget) return { text, converted: 0, used: spans.length };
+  const convert = new Set(spans.slice(budget).map(([start]) => start));
+  const lines = String(text).split("\n");
+  const out = [];
+  let converted = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!convert.has(i)) {
+      out.push(lines[i]);
+      continue;
+    }
+    const span = spans.find(([start]) => start === i);
+    out.push("```");
+    for (let j = i; j <= span[1]; j += 1) out.push(lines[j]);
+    out.push("```");
+    i = span[1];
+    converted += 1;
+  }
+  return { text: out.join("\n"), converted, used: Math.min(spans.length, budget) };
+}
+
+/** Feishu cards allow at most five rendered table components. Tables beyond the
+ * fifth are wrapped in code fences so they stay readable without failing the
+ * whole card update. */
+function limitCardTables(value) {
+  let budget = MAX_CARD_TABLES;
+  let converted = 0;
+  for (const node of textNodes(value.body?.elements ?? [])) {
+    const result = limitTablesInText(node.content, budget);
+    node.content = result.text;
+    budget -= result.used;
+    converted += result.converted;
+  }
+  if (converted > 0) {
+    value.body.elements.push({
+      tag: "markdown",
+      content: `…（表格过多，后 ${converted} 个表格已转为代码块）`,
+      text_size: "notation",
+    });
+  }
+  return value;
+}
+
 /** Feishu rejects cards over 30KB; truncate the largest text blocks before send. */
 function fitCard(value) {
   let bytes = utf8Bytes(JSON.stringify(value));
@@ -50,12 +123,12 @@ function fitCard(value) {
 }
 
 function card({ title, template = "blue", elements = [] }) {
-  return fitCard({
+  return fitCard(limitCardTables({
     schema: "2.0",
     config: { update_multi: true },
     header: { title: { tag: "plain_text", content: truncate(title, 80) }, template },
     body: { elements: elements.slice(0, 190) },
-  });
+  }));
 }
 
 function md(content) {
