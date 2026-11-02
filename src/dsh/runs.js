@@ -1,6 +1,6 @@
 /** Turns DSH session events into one live Feishu card per turn. */
 import { errorMessage, formatDuration, truncate, toolPreview } from "../utils.js";
-import { runCard } from "../cards.js";
+import { answerPartCard, runCard, splitAnswerForCards } from "../cards.js";
 
 function textOfMessage(message) {
   const blocks = Array.isArray(message?.content) ? message.content : [];
@@ -175,7 +175,26 @@ export class RunCards {
       clearTimeout(run.patchTimer);
       run.patchTimer = undefined;
     }
-    void this.patch(run);
+    let splitParts = [];
+    if (status === "done" || status === "stopped") {
+      const answer = String(run.text || run.streamingText || "").trim();
+      if (answer) {
+        const chunks = splitAnswerForCards(answer, { maxTables: 5, maxBytes: 24_000 });
+        if (chunks.length > 1) {
+          const maxParts = 5;
+          splitParts = chunks.slice(1, maxParts);
+          run.displayAnswer = chunks[0];
+          run.splitParts = splitParts;
+          const omitted = chunks.length - 1 - splitParts.length;
+          run.answerNote =
+            `回答较长，共 ${chunks.length} 段；后续内容见下方卡片。` +
+            (omitted > 0 ? `另有 ${omitted} 段未发送，完整内容在 DSH Web 会话里。` : "");
+        }
+      }
+    }
+    void this.patch(run).then(() => {
+      if (splitParts.length > 0) void this.sendParts(run);
+    });
     this.log.info("回合结束", {
       sessionId: run.sessionId,
       status,
@@ -319,6 +338,21 @@ export class RunCards {
     this.runs.delete(sessionId);
     this.log.info("运行卡片已恢复清理", { sessionId });
     return true;
+  }
+
+  async sendParts(run) {
+    const parts = run.splitParts ?? [];
+    run.splitParts = [];
+    const total = parts.length + 1;
+    for (let i = 0; i < parts.length; i += 1) {
+      const card = answerPartCard({ index: i + 2, total, content: parts[i] });
+      let sent = run.messageId
+        ? await this.sender.replyCard(run.messageId, card)
+        : { ok: false, error: "missing run card" };
+      if (!sent.ok && run.chatId) sent = await this.sender.sendCard(run.chatId, card);
+      if (!sent.ok) this.log.warn("回答分段卡片发送失败", { sessionId: run.sessionId, index: i + 2, error: sent.error });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 
   async stop(sessionId) {

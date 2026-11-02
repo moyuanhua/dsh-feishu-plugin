@@ -18,8 +18,10 @@ import {
   openedSessionCard,
   newSessionFormCard,
   permissionCard,
+  answerPartCard,
   questionCard,
   runCard,
+  splitAnswerForCards,
   sessionListCard,
 } from "../src/cards.js";
 
@@ -438,6 +440,18 @@ test("multi-select toggles buttons and submits the selected labels", async () =>
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.ok(patches.length >= 1);
   questions.close();
+});
+
+test("long answers split into multiple cards by table count", () => {
+  const table = "| A | B |\n|---|---|\n| 1 | 2 |";
+  const answer = Array.from({ length: 7 }, () => table).join("\n\n");
+  const chunks = splitAnswerForCards(answer);
+  assert.equal(chunks.length, 2);
+  const countTables = (text) =>
+    text.split("\n").filter((line) => line.includes("|") && /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes("-")).length;
+  for (const chunk of chunks) assert.ok(countTables(chunk) <= 5);
+  const part = answerPartCard({ index: 2, total: 2, content: chunks[1] });
+  assert.match(part.header.title.content, /2\/2/);
 });
 
 test("cards convert markdown tables beyond the Feishu limit of five", () => {

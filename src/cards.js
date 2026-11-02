@@ -477,6 +477,124 @@ export function approvalResultCard({ approved, toolName }) {
   });
 }
 
+function markdownBlocks(text) {
+  const lines = String(text).split("\n");
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].trim() === "") {
+      i += 1;
+      continue;
+    }
+    if (/^\s*(```|~~~)/.test(lines[i])) {
+      let j = i + 1;
+      while (j < lines.length && !/^\s*(```|~~~)/.test(lines[j])) j += 1;
+      blocks.push({ text: lines.slice(i, j + 1).join("\n"), tables: 0 });
+      i = j + 1;
+      continue;
+    }
+    if (i + 1 < lines.length && lines[i].includes("|") && isTableSeparator(lines[i + 1])) {
+      let j = i + 1;
+      while (j + 1 < lines.length && lines[j + 1].includes("|") && lines[j + 1].trim() !== "") j += 1;
+      blocks.push({ text: lines.slice(i, j + 1).join("\n"), tables: 1 });
+      i = j + 1;
+      continue;
+    }
+    let j = i;
+    const paragraph = [];
+    while (j < lines.length && lines[j].trim() !== "") {
+      if (j + 1 < lines.length && lines[j].includes("|") && isTableSeparator(lines[j + 1])) break;
+      if (/^\s*(```|~~~)/.test(lines[j])) break;
+      paragraph.push(lines[j]);
+      j += 1;
+    }
+    if (paragraph.length === 0) {
+      paragraph.push(lines[i]);
+      j = i + 1;
+    }
+    blocks.push({ text: paragraph.join("\n"), tables: 0 });
+    i = j;
+  }
+  return blocks;
+}
+
+function splitLongBlock(block, maxBytes) {
+  const out = [];
+  let current = "";
+  for (const line of String(block.text).split("\n")) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (utf8Bytes(candidate) <= maxBytes) {
+      current = candidate;
+      continue;
+    }
+    if (current) out.push(current);
+    current = "";
+    if (utf8Bytes(line) <= maxBytes) {
+      current = line;
+      continue;
+    }
+    let piece = "";
+    for (const char of line) {
+      if (utf8Bytes(piece + char) > maxBytes) {
+        out.push(piece);
+        piece = "";
+      }
+      piece += char;
+    }
+    current = piece;
+  }
+  if (current) out.push(current);
+  return out.map((text) => ({ text, tables: block.tables }));
+}
+
+/** Split a final answer into cards under Feishu's table/byte limits while
+ * keeping each Markdown table intact. Live streaming still uses one card. */
+export function splitAnswerForCards(answer, { maxTables = 5, maxBytes = 24_000 } = {}) {
+  const blocks = markdownBlocks(String(answer));
+  if (blocks.length === 0) return [];
+  const chunks = [];
+  let current = [];
+  let tables = 0;
+  let bytes = 0;
+  const flush = () => {
+    if (current.length === 0) return;
+    chunks.push(current.join("\n\n"));
+    current = [];
+    tables = 0;
+    bytes = 0;
+  };
+  for (const block of blocks) {
+    const blockBytes = utf8Bytes(block.text);
+    if (blockBytes > maxBytes) {
+      flush();
+      for (const piece of splitLongBlock(block, maxBytes)) {
+        if (current.length > 0) flush();
+        current = [piece.text];
+        tables = piece.tables;
+        bytes = utf8Bytes(piece.text);
+        flush();
+      }
+      continue;
+    }
+    const nextTables = tables + block.tables;
+    const nextBytes = bytes + (current.length ? 2 : 0) + blockBytes;
+    if (current.length > 0 && (nextTables > maxTables || nextBytes > maxBytes)) flush();
+    current.push(block.text);
+    tables += block.tables;
+    bytes += (current.length > 1 ? 2 : 0) + blockBytes;
+  }
+  flush();
+  return chunks;
+}
+
+export function answerPartCard({ index, total, content }) {
+  return card({
+    title: `📄 回答（${index}/${total}）`,
+    template: "blue",
+    elements: [md(content), note(`这是第 ${index}/${total} 段，完整内容仍保存在 DSH 会话里。`)],
+  });
+}
+
 export function questionCard({ question, index = 0, total = 1, token, selected = [], notice }) {
   const elements = [];
   const head = question.header ? `**${question.header}**\n` : "";
@@ -614,7 +732,13 @@ export function runCard({ run, maxAnswerChars }) {
 
   const finished = status === "done" || status === "error" || status === "stopped" || status === "continued";
   const answer =
-    status === "continued" ? "" : ((finished ? run.text || run.streamingText : run.streamingText || run.text) || "").trim();
+    status === "continued"
+      ? ""
+      : String(
+          run.displayAnswer !== undefined
+            ? run.displayAnswer
+            : (finished ? run.text || run.streamingText : run.streamingText || run.text) || "",
+        ).trim();
   const reasoning = (run.streamingReasoning || "").trim();
   const elapsed = run.startedAt ? Date.now() - run.startedAt : 0;
 
@@ -691,6 +815,7 @@ export function runCard({ run, maxAnswerChars }) {
     }
   }
 
+  if (run.answerNote) elements.push(note(run.answerNote));
   if (run.canStop) {
     elements.push(button("⏹ 强制停止", "danger", { a: "stop", s: run.sessionId }));
   }
