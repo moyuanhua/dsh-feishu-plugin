@@ -1,5 +1,5 @@
 /** Turns DSH session events into one live Feishu card per turn. */
-import { errorMessage, formatDuration, truncate, toolPreview } from "../utils.js";
+import { describeError, errorMessage, formatDuration, truncate, toolPreview } from "../utils.js";
 import { answerPartCard, runCard, splitAnswerForCards } from "../cards.js";
 
 function textOfMessage(message) {
@@ -157,11 +157,27 @@ export class RunCards {
     run.patchTimer.unref?.();
   }
 
-  async patch(run) {
+  async patch(run, force = false) {
     if (!run.messageId) return;
-    const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
-    const result = await this.sender.patchCard(run.messageId, card);
-    if (!result.ok) this.log.debug("运行卡片更新失败", { sessionId: run.sessionId, error: result.error });
+    // Serialize card updates. Streaming patches are async; without this, a
+    // slow "处理中" update that started before turn/end can land after the
+    // final "回合完成" update and revert the card to the running state.
+    // `force` appends one final update after any in-flight/queued stale one.
+    if (!force && run.patchQueued) return run.patchChain;
+    run.patchQueued = true;
+    run.patchChain = (run.patchChain ?? Promise.resolve())
+      .then(async () => {
+        const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
+        const result = await this.sender.patchCard(run.messageId, card);
+        if (!result.ok) this.log.debug("运行卡片更新失败", { sessionId: run.sessionId, error: result.error });
+      })
+      .catch((error) => {
+        this.log.warn("运行卡片更新异常", { sessionId: run.sessionId, error: describeError(error) });
+      })
+      .finally(() => {
+        run.patchQueued = false;
+      });
+    return run.patchChain;
   }
 
   finish(run, status, error = "") {
@@ -192,7 +208,7 @@ export class RunCards {
         }
       }
     }
-    void this.patch(run).then(() => {
+    void this.patch(run, true).then(() => {
       if (splitParts.length > 0) void this.sendParts(run);
     });
     this.log.info("回合结束", {
