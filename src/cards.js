@@ -732,12 +732,10 @@ export function runCard({ run, maxAnswerChars }) {
 
   const finished = status === "done" || status === "error" || status === "stopped" || status === "continued";
   const answer =
-    status === "continued"
+    status === "continued" || run.answerHidden
       ? ""
       : String(
-          run.displayAnswer !== undefined
-            ? run.displayAnswer
-            : (finished ? run.text || run.streamingText : run.streamingText || run.text) || "",
+          (finished ? run.text || run.streamingText : run.streamingText || run.text) || "",
         ).trim();
   const reasoning = (run.streamingReasoning || "").trim();
   const elapsed = run.startedAt ? Date.now() - run.startedAt : 0;

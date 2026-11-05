@@ -473,6 +473,29 @@ test("cards convert markdown tables beyond the Feishu limit of five", () => {
   assert.ok((json.match(/```/g) ?? []).length >= 4);
 });
 
+test("split parts keep three tables each and the main card hides the long answer", () => {
+  const table = "| A | B |\n|---|---|\n| 1 | 2 |";
+  const answer = Array.from({ length: 7 }, () => table).join("\n\n");
+  const chunks = splitAnswerForCards(answer, { maxTables: 3, maxBytes: 20_000 });
+  assert.ok(chunks.length >= 3);
+  const card = runCard({
+    run: {
+      sessionId: "s1",
+      status: "done",
+      startedAt: Date.now(),
+      tools: [],
+      text: answer,
+      streamingText: answer,
+      answerHidden: true,
+      answerNote: "回答较长，已分成 3 段，见下方卡片。",
+    },
+    maxAnswerChars: 20_000,
+  });
+  const json = JSON.stringify(card);
+  assert.match(json, /已分成 3 段/);
+  assert.ok(!json.includes("| A | B |"));
+});
+
 test("long card content is truncated below the Feishu 30KB limit", () => {
   const huge = "长".repeat(20_000);
   const card = runCard({

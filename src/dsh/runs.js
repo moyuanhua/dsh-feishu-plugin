@@ -195,15 +195,18 @@ export class RunCards {
     if (status === "done" || status === "stopped") {
       const answer = String(run.text || run.streamingText || "").trim();
       if (answer) {
-        const chunks = splitAnswerForCards(answer, { maxTables: 5, maxBytes: 24_000 });
+        // Keep three tables per card: the documented limit is five, but a
+        // card that also carries reasoning/tool panels can push the renderer
+        // over it. Dedicated part cards are the reliable delivery path.
+        const chunks = splitAnswerForCards(answer, { maxTables: 3, maxBytes: 20_000 });
         if (chunks.length > 1) {
           const maxParts = 5;
-          splitParts = chunks.slice(1, maxParts);
-          run.displayAnswer = chunks[0];
+          splitParts = chunks.slice(0, maxParts);
+          run.answerHidden = true;
           run.splitParts = splitParts;
-          const omitted = chunks.length - 1 - splitParts.length;
+          const omitted = chunks.length - splitParts.length;
           run.answerNote =
-            `回答较长，共 ${chunks.length} 段；后续内容见下方卡片。` +
+            `回答较长，已分成 ${chunks.length} 段，见下方卡片。` +
             (omitted > 0 ? `另有 ${omitted} 段未发送，完整内容在 DSH Web 会话里。` : "");
         }
       }
@@ -359,9 +362,9 @@ export class RunCards {
   async sendParts(run) {
     const parts = run.splitParts ?? [];
     run.splitParts = [];
-    const total = parts.length + 1;
+    const total = parts.length;
     for (let i = 0; i < parts.length; i += 1) {
-      const card = answerPartCard({ index: i + 2, total, content: parts[i] });
+      const card = answerPartCard({ index: i + 1, total, content: parts[i] });
       let sent = run.messageId
         ? await this.sender.replyCard(run.messageId, card)
         : { ok: false, error: "missing run card" };
