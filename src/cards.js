@@ -462,6 +462,7 @@ export function approvalCard({ toolName, reason, sessionTitle, ttlMinutes, appro
         columns: [
           { tag: "column", width: "auto", elements: [button("✅ 允许一次", "primary", { a: "approve", t: approveToken })] },
           { tag: "column", width: "auto", elements: [button("❌ 拒绝", "danger", { a: "reject", t: rejectToken })] },
+          { tag: "column", width: "auto", elements: [button("🖥 改到 Web", "default", { a: "apdelegate", t: approveToken })] },
         ],
       },
       note(notice || "需要长期放行请在 Web 端切换权限预设；DSH 不提供「始终允许」。"),
@@ -474,6 +475,14 @@ export function approvalResultCard({ approved, toolName }) {
     title: approved ? "✅ 已允许本次调用" : "❌ 已拒绝本次调用",
     template: approved ? "green" : "red",
     elements: [md(`工具：\`${truncate(toolName, 100)}\``)],
+  });
+}
+
+export function delegatedCard({ message = "🖥 已转交 DSH Web 页面，请到 Web 端继续操作。" } = {}) {
+  return card({
+    title: "🖥 已转交 Web",
+    template: "grey",
+    elements: [md(message)],
   });
 }
 
@@ -662,6 +671,8 @@ export function questionCard({ question, index = 0, total = 1, token, selected =
   } else {
     elements.push(note("也可以直接在本话题回复文字作为自定义答案。"));
   }
+  elements.push(button("🖥 改到 Web 回答", "default", { a: "qdelegate", t: token }));
+  elements.push(note("如果 DSH Web 页面已打开，可点上方按钮转交，之后在 Web 端回答。"));
   if (notice) elements.push(note(notice));
 
   return card({

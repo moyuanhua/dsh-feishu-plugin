@@ -1,7 +1,9 @@
 /** Answers DSH approval/request waterfalls through Feishu cards. */
 import { createSigner } from "../security.js";
 import { describeError, truncate, uniqueId } from "../utils.js";
-import { approvalCard, approvalResultCard } from "../cards.js";
+import { approvalCard, approvalResultCard, delegatedCard } from "../cards.js";
+
+const DELEGATE = Symbol("approval-delegate");
 
 export class FeishuApprovals {
   constructor({ ctx, bridge, sender, state, config, log, isAllowed }) {
@@ -74,6 +76,7 @@ export class FeishuApprovals {
         sessionId,
         toolName: req.toolName,
         messageId: sent.messageId,
+        next,
         resolve,
         timer: undefined,
         signal: req.signal,
@@ -90,12 +93,32 @@ export class FeishuApprovals {
       }
     });
 
+    if (outcome === DELEGATE) {
+      this.log.info("审批已转交 Web UI", { sessionId, tool: req.toolName });
+      return next();
+    }
     this.log.info("审批已结算", { sessionId, tool: req.toolName, outcome });
     return outcome;
   }
 
   /** Keep a timed-out approval actionable for a grace period instead of
    * deleting it; a late click can still resolve the waiting DSH request. */
+  async delegate(key) {
+    const item = this.pending.get(key);
+    if (!item || item.settled) return false;
+    item.settled = true;
+    this.pending.delete(key);
+    clearTimeout(item.timer);
+    if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
+    const patched = await this.sender.patchCard(
+      item.messageId,
+      delegatedCard({ message: "🖥 已转交 DSH Web 页面，请到 Web 端允许/拒绝这次调用。" }),
+    );
+    if (!patched.ok) void this.sender.replyText(item.messageId, "🖥 已转交 DSH Web 页面，请到 Web 端操作。");
+    item.resolve?.(DELEGATE);
+    return true;
+  }
+
   async markExpired(key) {
     const item = this.pending.get(key);
     if (!item || item.settled || item.expired) return;
@@ -173,6 +196,10 @@ export class FeishuApprovals {
     }
     const item = this.pending.get(payload.key);
     if (!item) return { toast: { type: "error", content: "审批已结束或已过期" } };
+    if (value.a === "apdelegate") {
+      const ok = await this.delegate(payload.key);
+      return { toast: { type: ok ? "info" : "error", content: ok ? "已转交 Web 审批" : "审批已结束或已过期" } };
+    }
     const approve = value.a === "approve";
     await this.settle(payload.key, approve ? "allowed-once" : "rejected");
     return { toast: { type: "info", content: approve ? "已允许本次调用" : "已拒绝本次调用" } };

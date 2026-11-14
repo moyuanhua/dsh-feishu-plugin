@@ -1178,8 +1178,8 @@ export class FeishuApp {
     const value = isRecord(action.value) ? action.value : {};
     const kind = str(value.a);
 
-    if (kind === "approve" || kind === "reject") return this.approvals.handleAction(action);
-    if (kind === "answer" || kind === "qsubmit" || kind === "qpick" || kind === "qtext" || kind === "qtextsubmit") return this.questions.handleAction(action);
+    if (kind === "approve" || kind === "reject" || kind === "apdelegate") return this.approvals.handleAction(action);
+    if (kind === "answer" || kind === "qsubmit" || kind === "qpick" || kind === "qtext" || kind === "qtextsubmit" || kind === "qdelegate") return this.questions.handleAction(action);
 
     if (kind === "stop") {
       const sessionId = str(value.s);

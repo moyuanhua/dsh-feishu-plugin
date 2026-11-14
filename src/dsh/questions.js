@@ -1,7 +1,9 @@
 /** Answers DSH user-questions waterfalls through Feishu forms or plain replies. */
 import { createSigner } from "../security.js";
 import { describeError, truncate, uniqueId } from "../utils.js";
-import { questionAnsweredCard, questionCard } from "../cards.js";
+import { delegatedCard, questionAnsweredCard, questionCard } from "../cards.js";
+
+const DELEGATE = Symbol("question-delegate");
 
 function textOf(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -117,6 +119,7 @@ export class FeishuQuestions {
       threadId: this.state.threadForSession?.(sessionId),
       agent: request.agent,
       callId: request.wait?.callId ? String(request.wait.callId) : undefined,
+      next,
       expired: false,
       resolve: undefined,
       timer: undefined,
@@ -159,6 +162,10 @@ export class FeishuQuestions {
       }
     });
 
+    if (answer === DELEGATE) {
+      this.log.info("提问已转交 Web UI", { sessionId, callId: item.callId });
+      return next();
+    }
     return { answers: answer };
   }
 
@@ -302,6 +309,24 @@ export class FeishuQuestions {
     return { done: true, remaining: 0 };
   }
 
+  async delegate(key) {
+    const item = this.pending.get(key);
+    if (!item || item.settled) return false;
+    item.settled = true;
+    this.pending.delete(key);
+    clearTimeout(item.timer);
+    if (item.signal && item.onAbort) item.signal.removeEventListener("abort", item.onAbort);
+    if (item.messageId) {
+      const patched = await this.sender.patchCard(
+        item.messageId,
+        delegatedCard({ message: "🖥 已转交 DSH Web 页面，请到 Web 端回答这个问题。" }),
+      );
+      if (!patched.ok) void this.sender.replyText(item.anchorMessageId, "🖥 已转交 DSH Web 页面，请到 Web 端回答。");
+    }
+    item.resolve?.(DELEGATE);
+    return true;
+  }
+
   async handlePick(action, value) {
     const payload = this.signer.verify(value.t);
     if (!payload || payload.kind !== "question") {
@@ -434,6 +459,10 @@ export class FeishuQuestions {
     if (value.a === "qpick") return this.handlePick(action, value);
     if (value.a === "qtextsubmit") return this.handleTextSubmit(action, value);
     if (value.a === "qtext") return this.handleTextPrompt(action.value ?? {});
+    if (value.a === "qdelegate") {
+      const ok = await this.delegate(payload.key);
+      return { toast: { type: ok ? "info" : "error", content: ok ? "已转交 Web 回答" : "问题已回答或已过期" } };
+    }
 
     const item = this.pending.get(payload.key);
     if (!item) return { toast: { type: "error", content: "问题已回答或已过期" } };

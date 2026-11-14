@@ -516,6 +516,31 @@ test("long card content is truncated below the Feishu 30KB limit", () => {
   assert.match(JSON.stringify(card), /卡片已截断/);
 });
 
+test("a question card can be delegated to the Web UI answerer", async () => {
+  const { questions, patches } = questionHarness();
+  let delegated = 0;
+  const next = async () => {
+    delegated += 1;
+    return { answers: [{ id: "q1", selected: ["A"] }] };
+  };
+  const pending = questions.handleRequest(
+    {
+      agent: { id: "session-delegate" },
+      questions: [{ id: "q1", question: "Pick one", options: [{ label: "A" }, { label: "B" }] }],
+    },
+    next,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const key = [...questions.pending.keys()][0];
+  assert.equal(await questions.delegate(key), true);
+  const result = await pending;
+  assert.equal(delegated, 1);
+  assert.deepEqual(result.answers, [{ id: "q1", selected: ["A"] }]);
+  assert.equal(questions.pending.size, 0);
+  assert.ok(patches.some((entry) => /已转交/.test(JSON.stringify(entry.card))));
+  questions.close();
+});
+
 test("late question answers are delivered through userQuestions.answer", async () => {
   const { questions, lateAnswers, rotations } = questionHarness();
   const agent = { id: "session-late" };
