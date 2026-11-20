@@ -23,6 +23,8 @@ export const Config = Schema.object({
   }).default({ provider: "", model: "" }).volatile(),
   defaultPermissionPreset: Schema.string().default("").volatile(),
   busyDelivery: Schema.union(["queue", "steer"]).default("queue"),
+  /** "post": answers arrive as ordinary rich-text messages; "card": live card. */
+  answerMode: Schema.union(["post", "card"]).default("post"),
   acceptAttachments: Schema.boolean().default(true),
   attachmentMaxBytes: Schema.number().default(20 * 1024 * 1024),
   attachmentTimeoutMs: Schema.number().default(30_000),

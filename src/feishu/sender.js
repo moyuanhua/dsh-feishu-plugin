@@ -126,6 +126,49 @@ export function createSender(client, log) {
       }
     },
 
+    async sendPost(chatId, post) {
+      if (!chatId) return { ok: false, error: "missing chatId" };
+      try {
+        const res = await client.im.message.create({
+          params: { receive_id_type: "chat_id" },
+          data: { receive_id: chatId, msg_type: "post", content: JSON.stringify(post) },
+        });
+        if (!ok(res)) return { ok: false, error: `code=${res.code} msg=${res.msg ?? ""}` };
+        return res?.data?.message_id
+          ? { ok: true, messageId: res.data.message_id }
+          : { ok: false, error: "missing message_id" };
+      } catch (error) {
+        log.warn("发送富文本失败", { chatId, error: describeLarkError(error) });
+        return { ok: false, error: describeLarkError(error) };
+      }
+    },
+
+    async replyPost(messageId, post, options = {}) {
+      if (!messageId) return { ok: false, error: "missing messageId" };
+      try {
+        const res = await client.im.message.reply({
+          path: { message_id: messageId },
+          data: {
+            msg_type: "post",
+            content: JSON.stringify(post),
+            ...(options.replyInThread ? { reply_in_thread: true } : {}),
+          },
+        });
+        if (!ok(res)) return { ok: false, error: `code=${res.code} msg=${res.msg ?? ""}` };
+        const newId = res?.data?.message_id;
+        return newId
+          ? {
+              ok: true,
+              messageId: newId,
+              ...(res.data.thread_id ? { threadId: res.data.thread_id } : {}),
+            }
+          : { ok: false, error: "missing message_id" };
+      } catch (error) {
+        log.warn("回复富文本失败", { messageId, error: describeLarkError(error) });
+        return { ok: false, error: describeLarkError(error) };
+      }
+    },
+
     async getMessageMeta(messageId) {
       if (!messageId) return undefined;
       try {

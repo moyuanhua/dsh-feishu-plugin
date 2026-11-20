@@ -18,6 +18,9 @@
           model: ''
         defaultPermissionPreset: ''
         busyDelivery: queue
+        # post: answers arrive as ordinary rich-text messages (no live card).
+        # card: one live, patchable card per turn.
+        answerMode: post
         acceptAttachments: true
         stream: true
         logLevel: info
