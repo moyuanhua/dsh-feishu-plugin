@@ -1,6 +1,7 @@
 /** Turns DSH session events into one live Feishu card per turn. */
 import { describeError, errorMessage, formatDuration, truncate, toolPreview } from "../utils.js";
 import { answerPartCard, runCard, splitAnswerForCards } from "../cards.js";
+import { mdToPosts } from "../post-render.js";
 
 function textOfMessage(message) {
   const blocks = Array.isArray(message?.content) ? message.content : [];
@@ -17,6 +18,10 @@ export class RunCards {
     this.state = state;
     this.config = config;
     this.log = log;
+    // Post mode answers as ordinary rich-text messages instead of a live card.
+    // A card can be patched while the model streams; a post cannot, so post
+    // mode trades streaming for a chat-like transcript.
+    this.postMode = config.answerMode === "post";
     this.runs = new Map();
     this.heartbeat = setInterval(() => {
       for (const run of this.runs.values()) {
@@ -73,14 +78,31 @@ export class RunCards {
       finished: false,
     };
     this.runs.set(sessionId, run);
-    const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
-    const sent = anchorMessageId
-      ? await this.sender.replyCard(anchorMessageId, card)
-      : await this.sender.sendCard(chatId, card);
-    if (sent.ok) run.messageId = sent.messageId;
-    else run.error = sent.error ?? "无法发送运行卡片";
+    if (this.postMode) {
+      await this.sendAck(run, "\u{1F914} 处理中…");
+    } else {
+      const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
+      const sent = anchorMessageId
+        ? await this.sender.replyCard(anchorMessageId, card)
+        : await this.sender.sendCard(chatId, card);
+      if (sent.ok) run.messageId = sent.messageId;
+      else run.error = sent.error ?? "无法发送运行卡片";
+    }
     this.schedule(run, true);
     return run;
+  }
+
+  /**
+   * Post mode has no card to patch, so the only progress signal is a short
+   * placeholder that `sendAnswer` recalls once the turn ends.
+   */
+  async sendAck(run, text) {
+    const sent = run.anchorMessageId
+      ? await this.sender.replyText(run.anchorMessageId, text, { replyInThread: Boolean(run.threadId) })
+      : await this.sender.sendText(run.chatId, text);
+    if (sent.ok) run.ackMessageId = sent.messageId;
+    else run.error = sent.error ?? "无法发送处理中提示";
+    return sent;
   }
 
   /**
@@ -104,7 +126,14 @@ export class RunCards {
     // card; the complete answer will be streamed into the new card.
     old.text = "";
     old.streamingText = "";
-    void this.patch(old);
+    if (this.postMode) {
+      if (old.ackMessageId) {
+        void this.sender.recallMessage(old.ackMessageId);
+        old.ackMessageId = undefined;
+      }
+    } else {
+      void this.patch(old);
+    }
 
     const run = {
       sessionId,
@@ -133,20 +162,26 @@ export class RunCards {
       continued: true,
     };
     this.runs.set(sessionId, run);
-    const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
-    let sent = anchorMessageId
-      ? await this.sender.replyCard(anchorMessageId, card)
-      : { ok: false, error: "missing anchor" };
-    if (!sent.ok && (chatId || run.chatId)) {
-      sent = await this.sender.sendCard(chatId || run.chatId, card);
+    if (this.postMode) {
+      await this.sendAck(run, "\u{1F914} 继续处理中…");
+    } else {
+      const card = runCard({ run, maxAnswerChars: this.config.maxAnswerChars });
+      let sent = anchorMessageId
+        ? await this.sender.replyCard(anchorMessageId, card)
+        : { ok: false, error: "missing anchor" };
+      if (!sent.ok && (chatId || run.chatId)) {
+        sent = await this.sender.sendCard(chatId || run.chatId, card);
+      }
+      if (sent.ok) run.messageId = sent.messageId;
+      else run.error = sent.error ?? "无法发送继续处理卡片";
     }
-    if (sent.ok) run.messageId = sent.messageId;
-    else run.error = sent.error ?? "无法发送继续处理卡片";
     this.schedule(run, true);
     return run;
   }
 
   schedule(run, immediate = false, delayOverride) {
+    // Nothing on screen changes during a post-mode turn: skip the timer churn.
+    if (this.postMode) return;
     if (run.finished && !immediate) return;
     if (run.patchTimer) return;
     const delay = immediate ? 0 : (delayOverride ?? this.config.streamThrottleMs);
@@ -158,6 +193,7 @@ export class RunCards {
   }
 
   async patch(run, force = false) {
+    if (this.postMode) return;
     if (!run.messageId) return;
     // Serialize card updates. Streaming patches are async; without this, a
     // slow "处理中" update that started before turn/end can land after the
@@ -192,7 +228,7 @@ export class RunCards {
       run.patchTimer = undefined;
     }
     let splitParts = [];
-    if (status === "done" || status === "stopped") {
+    if (!this.postMode && (status === "done" || status === "stopped")) {
       const answer = String(run.text || run.streamingText || "").trim();
       if (answer) {
         // Keep three tables per card: the documented limit is five, but a
@@ -211,9 +247,13 @@ export class RunCards {
         }
       }
     }
-    void this.patch(run, true).then(() => {
-      if (splitParts.length > 0) void this.sendParts(run);
-    });
+    if (this.postMode) {
+      void this.sendAnswer(run);
+    } else {
+      void this.patch(run, true).then(() => {
+        if (splitParts.length > 0) void this.sendParts(run);
+      });
+    }
     this.log.info("回合结束", {
       sessionId: run.sessionId,
       status,
@@ -221,6 +261,52 @@ export class RunCards {
       tools: run.tools.length,
       error,
     });
+  }
+
+  /**
+   * Post mode delivery: recall the "processing" line, then send the answer as
+   * one or more rich-text messages. Errors and stops become plain text; a
+   * failed post falls back to text so the answer is never lost.
+   */
+  async sendAnswer(run) {
+    const ackId = run.ackMessageId;
+    run.ackMessageId = undefined;
+    const quiet = async (fn) => {
+      try {
+        return await fn();
+      } catch (error) {
+        this.log.warn("回答发送失败", { sessionId: run.sessionId, error: describeError(error) });
+        return undefined;
+      }
+    };
+    if (ackId) await quiet(() => this.sender.recallMessage(ackId));
+    const reply = async (post) =>
+      run.anchorMessageId
+        ? await this.sender.replyPost(run.anchorMessageId, post)
+        : await this.sender.sendPost(run.chatId, post);
+    const replyText = async (text) =>
+      run.anchorMessageId
+        ? await this.sender.replyText(run.anchorMessageId, text, { replyInThread: Boolean(run.threadId) })
+        : await this.sender.sendText(run.chatId, text);
+
+    if (run.status === "error") {
+      await quiet(() => replyText(`\u274C ${truncate(run.error || "出错", 1_500)}`));
+      return;
+    }
+    if (run.status === "stopped") {
+      await quiet(() => replyText("\u23F9 已停止"));
+      return;
+    }
+
+    const answer = String(run.text || run.streamingText || "").trim();
+    if (!answer) return;
+    for (const post of mdToPosts(answer)) {
+      const sent = await quiet(() => reply(post));
+      if (sent?.ok) continue;
+      this.log.warn("富文本发送失败，回退纯文本", { sessionId: run.sessionId, error: sent?.error });
+      await quiet(() => replyText(answer.length > 4_000 ? `${answer.slice(0, 4_000)}\n…` : answer));
+      return;
+    }
   }
 
   onSessionEvent(session, event) {
@@ -353,7 +439,14 @@ export class RunCards {
     run.finishedAt = Date.now();
     run.status = "stopped";
     run.canStop = false;
-    void this.patch(run);
+    if (this.postMode) {
+      if (run.ackMessageId) {
+        void this.sender.recallMessage(run.ackMessageId);
+        run.ackMessageId = undefined;
+      }
+    } else {
+      void this.patch(run);
+    }
     this.runs.delete(sessionId);
     this.log.info("运行卡片已恢复清理", { sessionId });
     return true;

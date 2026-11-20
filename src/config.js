@@ -89,6 +89,7 @@ export function resolveConfig(raw) {
       : undefined,
     defaultPermissionPreset: str(unwrap(config.defaultPermissionPreset)).trim() || undefined,
     busyDelivery: str(unwrap(config.busyDelivery)) === "steer" ? "steer" : "queue",
+    answerMode: str(unwrap(config.answerMode)) === "card" ? "card" : "post",
     acceptAttachments: bool(unwrap(config.acceptAttachments), true),
     attachmentMaxBytes: number(unwrap(config.attachmentMaxBytes), 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
     attachmentTimeoutMs: number(unwrap(config.attachmentTimeoutMs), 30_000, 5_000, 120_000),
